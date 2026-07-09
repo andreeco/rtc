@@ -97,6 +97,7 @@ impl RTCMessageInternal {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct TaggedRTCMessageInternal {
     pub(crate) now: Instant,
     pub(crate) transport: TransportContext,
