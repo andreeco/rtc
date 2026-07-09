@@ -245,6 +245,14 @@ impl DataChannel {
         Ok(())
     }
 
+    /// Returns the currently queued outbound payload bytes waiting to be flushed.
+    pub fn buffered_amount(&self) -> usize {
+        self.write_outs
+            .iter()
+            .map(|message| message.payload.len())
+            .sum()
+    }
+
     /// SetBufferedAmountHighThreshold is used to update the threshold.
     /// See BufferedAmountHighThreshold().
     pub fn set_buffered_amount_high_threshold(&mut self, threshold: u32) -> Result<()> {

@@ -350,6 +350,12 @@ pub struct SettingEngine {
     pub(crate) mid_generator: Option<Arc<dyn Fn(isize) -> String + Send + Sync>>,
     /// Determines the max size of any message that may be sent through an SCTP transport.
     pub(crate) sctp_max_message_size: SctpMaxMessageSize,
+    /// Overrides the SCTP max receive buffer size. Zero uses the SCTP default.
+    pub(crate) sctp_max_receive_buffer_size: u32,
+    /// Enables Pion-compatible detached data channel mode.
+    pub(crate) detach_data_channels: bool,
+    /// Enables Pion-compatible SCTP block-write behavior for detached data channels.
+    pub(crate) data_channel_block_write: bool,
     pub(crate) ignore_rid_pause_for_recv: bool,
     pub(crate) write_ssrc_attributes_for_simulcast: bool,
 }
@@ -1116,6 +1122,31 @@ impl SettingEngine {
     /// - [RFC 8841 §6.1 - max-message-size](https://datatracker.ietf.org/doc/html/rfc8841#section-6.1)
     pub fn set_sctp_max_message_size(&mut self, max_message_size: SctpMaxMessageSize) {
         self.sctp_max_message_size = max_message_size;
+    }
+
+    /// Sets the SCTP max receive buffer size. Zero uses the SCTP default.
+    pub fn set_sctp_max_receive_buffer_size(&mut self, max_receive_buffer_size: u32) {
+        self.sctp_max_receive_buffer_size = max_receive_buffer_size;
+    }
+
+    /// Enables Pion-compatible detached data channel mode.
+    pub fn detach_data_channels(&mut self) {
+        self.detach_data_channels = true;
+    }
+
+    /// Returns whether detached data channel mode is enabled.
+    pub fn data_channels_detached(&self) -> bool {
+        self.detach_data_channels
+    }
+
+    /// Enables Pion-compatible SCTP block-write behavior for detached data channels.
+    pub fn set_data_channel_block_write(&mut self, enabled: bool) {
+        self.data_channel_block_write = enabled;
+    }
+
+    /// Returns whether data channel block-write behavior is enabled.
+    pub fn data_channel_block_write(&self) -> bool {
+        self.data_channel_block_write
     }
 
     /// Controls whether to ignore RID pause signals for receiving transceivers.

@@ -23,6 +23,7 @@ pub struct TransportConfig {
     max_num_outbound_streams: u16,
     max_num_inbound_streams: u16,
     timer_config: TimerConfig,
+    block_write: bool,
 }
 
 impl Default for TransportConfig {
@@ -34,6 +35,7 @@ impl Default for TransportConfig {
             max_num_outbound_streams: u16::MAX,
             max_num_inbound_streams: u16::MAX,
             timer_config: TimerConfig::default(),
+            block_write: false,
         }
     }
 }
@@ -69,6 +71,11 @@ impl TransportConfig {
         self
     }
 
+    pub fn with_block_write(mut self, value: bool) -> Self {
+        self.block_write = value;
+        self
+    }
+
     pub fn sctp_port(&self) -> u16 {
         self.sctp_port
     }
@@ -91,6 +98,10 @@ impl TransportConfig {
 
     pub fn timer_config(&self) -> TimerConfig {
         self.timer_config
+    }
+
+    pub fn block_write(&self) -> bool {
+        self.block_write
     }
 }
 

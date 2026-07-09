@@ -39,6 +39,7 @@ use crate::peer_connection::message::RTCMessage;
 use bytes::BytesMut;
 use interceptor::{Interceptor, NoopInterceptor};
 use sansio::Protocol;
+use sctp;
 use shared::error::{Error, Result};
 
 pub(crate) mod init;
@@ -175,6 +176,32 @@ where
             .get(&self.id)
             .unwrap()
             .ready_state
+    }
+
+    /// buffered_amount returns the number of bytes currently queued for outbound delivery.
+    pub fn buffered_amount(&self) -> u64 {
+        let Some(data_channel) = self
+            .peer_connection
+            .data_channels
+            .get(&self.id)
+            .and_then(|dc| dc.data_channel.as_ref())
+        else {
+            return 0;
+        };
+
+        let association_handle = data_channel.association_handle();
+        let stream_id = data_channel.stream_identifier();
+        if let Some(association) = self
+            .peer_connection
+            .sctp_transport()
+            .sctp_associations
+            .get(&sctp::AssociationHandle(association_handle))
+            && let Ok(buffered_amount) = association.stream_buffered_amount(stream_id)
+        {
+            return buffered_amount as u64;
+        }
+
+        data_channel.buffered_amount() as u64
     }
 
     /// buffered_amount_high_threshold represents the threshold at which the

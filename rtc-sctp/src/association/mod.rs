@@ -197,6 +197,8 @@ pub struct Association {
 
     // Congestion control parameters
     max_receive_buffer_size: u32,
+    block_write: bool,
+    write_pending: bool,
     // my congestion window size
     pub(crate) cwnd: u32,
     // calculated peer's receiver windows size
@@ -290,6 +292,8 @@ impl Default for Association {
 
             // Congestion control parameters
             max_receive_buffer_size: 0,
+            block_write: false,
+            write_pending: false,
             // my congestion window size
             cwnd: 0,
             // calculated peer's receiver windows size
@@ -357,6 +361,7 @@ impl Association {
             side,
             handshake_completed: false,
             max_receive_buffer_size: config.max_receive_buffer_size(),
+            block_write: config.block_write(),
             max_message_size: config.max_message_size(),
             my_max_num_outbound_streams: config.max_num_outbound_streams(),
             my_max_num_inbound_streams: config.max_num_inbound_streams(),
@@ -2490,6 +2495,10 @@ impl Association {
                 }
             }
 
+            if self.block_write && !chunks.is_empty() && self.pending_queue.is_empty() {
+                self.write_pending = false;
+            }
+
             // the data sender can always have one DATA chunk in flight to the receiver
             if chunks.is_empty() && self.inflight_queue.is_empty() {
                 // Send zero window probe
@@ -2807,12 +2816,21 @@ impl Association {
             return Err(Error::ErrPayloadDataStateNotExist);
         }
 
-        // Push the chunks into the pending queue first.
+        if self.block_write {
+            if self.write_pending {
+                return Err(Error::ErrBufferFull);
+            }
+            if !chunks.is_empty() {
+                self.write_pending = true;
+            }
+        }
+
         for c in chunks {
             self.pending_queue.push(c);
         }
 
         self.awake_write_loop();
+
         Ok(())
     }
 
@@ -2820,6 +2838,14 @@ impl Association {
     /// This is used only by testing.
     pub(crate) fn buffered_amount(&self) -> usize {
         self.pending_queue.get_num_bytes() + self.inflight_queue.get_num_bytes()
+    }
+
+    pub fn stream_buffered_amount(&self, stream_identifier: StreamId) -> Result<usize> {
+        if let Some(s) = self.streams.get(&stream_identifier) {
+            Ok(s.buffered_amount)
+        } else {
+            Err(Error::ErrStreamNotExisted)
+        }
     }
 
     fn awake_write_loop(&self) {
