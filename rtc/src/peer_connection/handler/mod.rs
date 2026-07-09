@@ -116,6 +116,7 @@ pub(crate) struct PipelineContext {
     // Pipeline
     pub(crate) read_outs: VecDeque<RTCMessage>,
     pub(crate) write_outs: VecDeque<TaggedBytesMut>,
+    pub(crate) pending_internal_writes: VecDeque<TaggedRTCMessageInternal>,
     pub(crate) event_outs: VecDeque<RTCPeerConnectionEvent>,
 
     // Statistics accumulator
@@ -260,6 +261,15 @@ where
     }
 
     fn handle_write(&mut self, msg: RTCMessage) -> Result<(), Self::Error> {
+        let is_data_channel_write = matches!(msg, RTCMessage::DataChannelMessage(_, _));
+
+        if is_data_channel_write
+            && self.setting_engine.data_channel_block_write
+            && !self.pipeline_context.pending_internal_writes.is_empty()
+        {
+            return Err(Error::ErrBufferFull);
+        }
+
         let rtc_message_internal = match msg {
             RTCMessage::DataChannelMessage(data_channel_id, data_channel_message) => {
                 RTCMessageInternal::Dtls(DTLSMessage::DataChannel(ApplicationMessage {
@@ -281,15 +291,30 @@ where
             now: Instant::now(),
             transport: Default::default(),
             message: rtc_message_internal,
-        })
+        })?;
+
+        if is_data_channel_write && let Some(raw) = self.poll_write() {
+            self.pipeline_context.write_outs.push_front(raw);
+        }
+
+        Ok(())
     }
 
     fn poll_write(&mut self) -> Option<Self::Wout> {
         let mut intermediate_wouts = VecDeque::new();
+        while let Some(msg) = self.pipeline_context.pending_internal_writes.pop_front() {
+            intermediate_wouts.push_back(msg);
+        }
 
+        let mut deferred_retry_wouts = VecDeque::new();
         for_each_handler!(reverse: process_handler!(self, handler, {
             while let Some(msg) = intermediate_wouts.pop_front() {
+                let retry_msg = msg.clone();
                 if let Err(err) = handler.handle_write(msg) {
+                    if err == Error::ErrBufferFull {
+                        deferred_retry_wouts.push_back(retry_msg);
+                        break;
+                    }
                     warn!("{}.handle_write got error: {}", handler.name(), err);
                 }
             }
@@ -297,6 +322,10 @@ where
                 intermediate_wouts.push_back(msg);
             }
         }));
+
+        while let Some(msg) = deferred_retry_wouts.pop_front() {
+            self.pipeline_context.pending_internal_writes.push_back(msg);
+        }
 
         // Final poll write out to pipeline's write out
         while let Some(msg) = intermediate_wouts.pop_front() {
@@ -306,6 +335,8 @@ where
                     transport: msg.transport,
                     message,
                 });
+            } else {
+                self.pipeline_context.pending_internal_writes.push_back(msg);
             }
         }
 

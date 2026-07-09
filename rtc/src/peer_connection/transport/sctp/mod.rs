@@ -36,10 +36,16 @@ pub(crate) struct RTCSctpTransport {
     pub(crate) max_channels: u16,
 
     pub(crate) internal_buffer: Vec<u8>,
+    pub(crate) block_write: bool,
+    pub(crate) max_receive_buffer_size: u32,
 }
 
 impl RTCSctpTransport {
-    pub(crate) fn new(max_message_size: SctpMaxMessageSize) -> Self {
+    pub(crate) fn new(
+        max_message_size: SctpMaxMessageSize,
+        block_write: bool,
+        max_receive_buffer_size: u32,
+    ) -> Self {
         Self {
             sctp_endpoint: None,
             sctp_transport_config: None,
@@ -50,6 +56,8 @@ impl RTCSctpTransport {
             max_message_size,
             max_channels: SCTP_MAX_CHANNELS,
             internal_buffer: vec![],
+            block_write,
+            max_receive_buffer_size,
         }
     }
 
@@ -91,9 +99,14 @@ impl RTCSctpTransport {
         self.internal_buffer.resize(max_message_size as usize, 0u8);
 
         let sctp_endpoint_config = ::sctp::EndpointConfig::default();
-        let sctp_transport_config = ::sctp::TransportConfig::default()
+        let mut sctp_transport_config = ::sctp::TransportConfig::default()
             .with_max_message_size(max_message_size)
-            .with_sctp_port(local_port);
+            .with_sctp_port(local_port)
+            .with_block_write(self.block_write);
+        if self.max_receive_buffer_size > 0 {
+            sctp_transport_config =
+                sctp_transport_config.with_max_receive_buffer_size(self.max_receive_buffer_size);
+        }
         //TODO: add remote_port support
 
         if dtls_role == RTCDtlsRole::Client {
