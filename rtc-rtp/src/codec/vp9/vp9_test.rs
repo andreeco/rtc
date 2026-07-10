@@ -251,6 +251,26 @@ fn test_vp9_temporal_layer_id_from_payload_rejects_missing_or_out_of_range_tid()
 }
 
 #[test]
+fn test_vp9_layer_ids_from_payload_extracts_temporal_and_spatial_ids() {
+    // TID=2 (0b010), SID=3 (0b0011), D=0 => layer_info = 0b0100_0110 = 0x46
+    let payload = [0x20, 0x46, 0x00];
+    assert_eq!(
+        layer_ids_from_payload(&payload),
+        Some(Vp9LayerIds {
+            temporal_id: 2,
+            spatial_id: 3,
+        })
+    );
+}
+
+#[test]
+fn test_vp9_layer_ids_from_payload_rejects_out_of_range_spatial_id() {
+    // SID=4 out of supported range [0..=3].
+    let payload_sid4 = [0x20, 0x48, 0x00];
+    assert_eq!(layer_ids_from_payload(&payload_sid4), None);
+}
+
+#[test]
 fn test_vp9_payloader_payload() -> Result<()> {
     let mut r0 = 8692;
     let mut rands = vec![];

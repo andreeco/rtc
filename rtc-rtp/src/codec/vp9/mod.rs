@@ -13,10 +13,17 @@ const VP9HEADER_SIZE: usize = 3;
 const MAX_SPATIAL_LAYERS: u8 = 5;
 const MAX_VP9REF_PICS: usize = 3;
 
-/// Extracts VP9 temporal layer id (TID) from an RTP payload descriptor when present.
+/// VP9 layer ids extracted from RTP payload descriptor when layer info is present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Vp9LayerIds {
+    pub temporal_id: u8,
+    pub spatial_id: u8,
+}
+
+/// Extracts VP9 layer ids (TID/SID) from an RTP payload descriptor when present.
 ///
-/// Returns `None` when no VP9 temporal id is present or the payload is malformed.
-pub fn temporal_layer_id_from_payload(payload: &[u8]) -> Option<u8> {
+/// Returns `None` when VP9 layer info is missing or payload is malformed.
+pub fn layer_ids_from_payload(payload: &[u8]) -> Option<Vp9LayerIds> {
     let descriptor = *payload.first()?;
     let l_bit_present = descriptor & 0x20 != 0;
     if !l_bit_present {
@@ -35,8 +42,24 @@ pub fn temporal_layer_id_from_payload(payload: &[u8]) -> Option<u8> {
     }
 
     let layer_info = *payload.get(offset)?;
-    let tid = layer_info >> 5;
-    (tid <= 2).then_some(tid)
+    let temporal_id = layer_info >> 5;
+    let spatial_id = (layer_info >> 1) & 0x0f;
+
+    if temporal_id > 2 || spatial_id > 3 {
+        return None;
+    }
+
+    Some(Vp9LayerIds {
+        temporal_id,
+        spatial_id,
+    })
+}
+
+/// Extracts VP9 temporal layer id (TID) from an RTP payload descriptor when present.
+///
+/// Returns `None` when no VP9 temporal id is present or the payload is malformed.
+pub fn temporal_layer_id_from_payload(payload: &[u8]) -> Option<u8> {
+    layer_ids_from_payload(payload).map(|ids| ids.temporal_id)
 }
 
 /// InitialPictureIDFn is a function that returns random initial picture ID.
