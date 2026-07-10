@@ -31,6 +31,7 @@ use crate::statistics::accumulator::RTCStatsAccumulator;
 use ::interceptor::Interceptor;
 use ::interceptor::Packet;
 use log::warn;
+use sansio::Protocol;
 use shared::TaggedBytesMut;
 use shared::error::{Error, flatten_errs};
 use std::collections::VecDeque;
@@ -127,6 +128,49 @@ impl<I> RTCPeerConnection<I>
 where
     I: Interceptor,
 {
+    fn handle_write_internal_message(
+        &mut self,
+        rtc_message_internal: RTCMessageInternal,
+        is_data_channel_write: bool,
+    ) -> Result<(), Error> {
+        if is_data_channel_write
+            && self.setting_engine.data_channel_block_write
+            && !self.pipeline_context.pending_internal_writes.is_empty()
+        {
+            return Err(Error::ErrBufferFull);
+        }
+
+        // Only endpoint can handle user write message
+        let mut endpoint_handler = self.get_endpoint_handler();
+        endpoint_handler.handle_write(TaggedRTCMessageInternal {
+            now: Instant::now(),
+            transport: Default::default(),
+            message: rtc_message_internal,
+        })?;
+
+        if is_data_channel_write && let Some(raw) = self.poll_write() {
+            self.pipeline_context.write_outs.push_front(raw);
+        }
+
+        Ok(())
+    }
+
+    /// Writes a raw RTP packet into the outbound pipeline.
+    pub fn write_rtp_packet(&mut self, packet: rtp::Packet) -> Result<(), Error> {
+        self.handle_write_internal_message(
+            RTCMessageInternal::Rtp(RTPMessage::Packet(Packet::Rtp(packet))),
+            false,
+        )
+    }
+
+    /// Writes raw RTCP packets into the outbound pipeline.
+    pub fn write_rtcp_packets(&mut self, packets: Vec<Box<dyn rtcp::Packet>>) -> Result<(), Error> {
+        self.handle_write_internal_message(
+            RTCMessageInternal::Rtp(RTPMessage::Packet(Packet::Rtcp(packets))),
+            false,
+        )
+    }
+
     /*
      Pipeline Flow (Read Path):
      Raw Bytes -> Demuxer -> ICE -> DTLS -> SCTP -> DataChannel -> SRTP -> Interceptor -> Endpoint -> Application
@@ -263,13 +307,6 @@ where
     fn handle_write(&mut self, msg: RTCMessage) -> Result<(), Self::Error> {
         let is_data_channel_write = matches!(msg, RTCMessage::DataChannelMessage(_, _));
 
-        if is_data_channel_write
-            && self.setting_engine.data_channel_block_write
-            && !self.pipeline_context.pending_internal_writes.is_empty()
-        {
-            return Err(Error::ErrBufferFull);
-        }
-
         let rtc_message_internal = match msg {
             RTCMessage::DataChannelMessage(data_channel_id, data_channel_message) => {
                 RTCMessageInternal::Dtls(DTLSMessage::DataChannel(ApplicationMessage {
@@ -285,19 +322,7 @@ where
             }
         };
 
-        // Only endpoint can handle user write message
-        let mut endpoint_handler = self.get_endpoint_handler();
-        endpoint_handler.handle_write(TaggedRTCMessageInternal {
-            now: Instant::now(),
-            transport: Default::default(),
-            message: rtc_message_internal,
-        })?;
-
-        if is_data_channel_write && let Some(raw) = self.poll_write() {
-            self.pipeline_context.write_outs.push_front(raw);
-        }
-
-        Ok(())
+        self.handle_write_internal_message(rtc_message_internal, is_data_channel_write)
     }
 
     fn poll_write(&mut self) -> Option<Self::Wout> {

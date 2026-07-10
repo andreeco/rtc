@@ -42,13 +42,13 @@
 //! if let Some(mut sender) = peer_connection.rtp_sender(sender_id) {
 //!     // Get current parameters
 //!     let mut params = sender.get_parameters().clone();
-//!     
+//!
 //!     // Modify encoding parameters
 //!     for encoding in &mut params.encodings {
 //!         encoding.max_bitrate = 1_000_000; // 1 Mbps
 //!         encoding.max_framerate = Some(30.0);
 //!     }
-//!     
+//!
 //!     // Apply the changes
 //!     sender.set_parameters(params, None)?;
 //! }
@@ -184,11 +184,10 @@ pub(crate) mod set_parameter_options;
 use crate::media_stream::MediaStreamId;
 use crate::media_stream::track::MediaStreamTrack;
 use crate::peer_connection::RTCPeerConnection;
-use crate::peer_connection::message::RTCMessage;
+
 use crate::rtp_transceiver::RTCRtpSenderId;
 use crate::rtp_transceiver::rtp_sender::rtp_codec::{CodecMatch, codec_parameters_fuzzy_search};
 use interceptor::{Interceptor, NoopInterceptor};
-use sansio::Protocol;
 use shared::error::{Error, Result};
 
 pub use rtcp_parameters::{RTCPFeedback, RTCRtcpParameters};
@@ -405,10 +404,8 @@ where
             }
         };
 
-        let track_id = sender.track().track_id().to_string();
         packet.header.payload_type = payload_type;
-        self.peer_connection
-            .handle_write(RTCMessage::RtpPacket(track_id, packet))
+        self.peer_connection.write_rtp_packet(packet)
     }
 
     /// Writes RTCP packets to the network.
@@ -428,13 +425,6 @@ where
         // the direction won't be changed too, so, unwrap() here is safe.
 
         //TODO: handle rtcp sender ssrc, header extension, etc.
-        let sender = self.peer_connection.rtp_transceivers[self.id.0]
-            .sender_mut()
-            .as_mut()
-            .unwrap();
-
-        let track_id = sender.track().track_id().to_string();
-        self.peer_connection
-            .handle_write(RTCMessage::RtcpPacket(track_id, packets))
+        self.peer_connection.write_rtcp_packets(packets)
     }
 }
