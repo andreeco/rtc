@@ -29,11 +29,18 @@ impl BitWriter {
     }
 }
 
-fn build_dd_payload(
+#[derive(Default, Clone, Copy)]
+struct DdPayloadOptions {
+    active_decode_targets_mask: Option<u8>,
+    custom_dti: Option<u8>,
+}
+
+fn build_dd_payload_with_options(
     template_id: u8,
     frame_number: u16,
     include_structure: bool,
     templates_next_layer_idc: &[u8],
+    options: DdPayloadOptions,
 ) -> Vec<u8> {
     let mut w = BitWriter::default();
 
@@ -43,44 +50,72 @@ fn build_dd_payload(
     w.push(u64::from(template_id), 6);
     w.push(u64::from(frame_number), 16);
 
-    if include_structure {
+    if include_structure
+        || options.active_decode_targets_mask.is_some()
+        || options.custom_dti.is_some()
+    {
         // extended field flags
-        w.push_bool(true); // template dependency structure present
-        w.push_bool(false); // active decode targets present
-        w.push_bool(false); // custom dtis
+        w.push_bool(include_structure); // template dependency structure present
+        w.push_bool(options.active_decode_targets_mask.is_some()); // active decode targets present
+        w.push_bool(options.custom_dti.is_some()); // custom dtis
         w.push_bool(false); // custom fdiffs
         w.push_bool(false); // custom chains
 
-        // structure
-        w.push(0, 6); // structure_id
-        w.push(0, 5); // num_decode_targets-1 => 1 target
+        if include_structure {
+            // structure
+            w.push(0, 6); // structure_id
+            w.push(0, 5); // num_decode_targets-1 => 1 target
 
-        // template layer transitions
-        for idc in templates_next_layer_idc {
-            w.push(u64::from(*idc), 2);
-        }
+            // template layer transitions
+            for idc in templates_next_layer_idc {
+                w.push(u64::from(*idc), 2);
+            }
 
-        let template_count = templates_next_layer_idc.len();
+            let template_count = templates_next_layer_idc.len();
 
-        // template dtis: one decode target per template
-        for _ in 0..template_count {
-            w.push(3, 2); // required
-        }
+            // template dtis: one decode target per template
+            for _ in 0..template_count {
+                w.push(3, 2); // required
+            }
 
-        // template fdiffs: none
-        for _ in 0..template_count {
+            // template fdiffs: none
+            for _ in 0..template_count {
+                w.push_bool(false);
+            }
+
+            // num chains in non-symmetric [0..num_decode_targets] => num_values=2
+            // encoding 0 as one bit 0.
+            w.push_bool(false);
+
+            // no resolutions
             w.push_bool(false);
         }
 
-        // num chains in non-symmetric [0..num_decode_targets] => num_values=2
-        // encoding 0 as one bit 0.
-        w.push_bool(false);
+        if let Some(mask) = options.active_decode_targets_mask {
+            w.push(u64::from(mask), 1); // one decode target in these fixtures
+        }
 
-        // no resolutions
-        w.push_bool(false);
+        if let Some(custom_dti) = options.custom_dti {
+            w.push(u64::from(custom_dti), 2); // one decode target in these fixtures
+        }
     }
 
     w.into_bytes()
+}
+
+fn build_dd_payload(
+    template_id: u8,
+    frame_number: u16,
+    include_structure: bool,
+    templates_next_layer_idc: &[u8],
+) -> Vec<u8> {
+    build_dd_payload_with_options(
+        template_id,
+        frame_number,
+        include_structure,
+        templates_next_layer_idc,
+        DdPayloadOptions::default(),
+    )
 }
 
 #[test]
@@ -140,4 +175,61 @@ fn dependency_descriptor_parser_rejects_payload_without_structure_context() {
     let mut parser = DependencyDescriptorParser::default();
     let payload = build_dd_payload(0, 1, false, &[]);
     assert_eq!(parser.parse_layer_ids(&payload), None);
+}
+
+#[test]
+fn dependency_descriptor_parser_respects_active_decode_target_mask() {
+    let mut parser = DependencyDescriptorParser::default();
+
+    let payload = build_dd_payload_with_options(
+        0,
+        1,
+        true,
+        &[3],
+        DdPayloadOptions {
+            active_decode_targets_mask: Some(0),
+            custom_dti: None,
+        },
+    );
+
+    assert_eq!(parser.parse_layer_ids(&payload), None);
+}
+
+#[test]
+fn dependency_descriptor_parser_respects_custom_dti_presence() {
+    let mut parser = DependencyDescriptorParser::default();
+
+    // Prime structure context with one template and one decode target.
+    let with_structure = build_dd_payload(0, 1, true, &[3]);
+    assert!(parser.parse_layer_ids(&with_structure).is_some());
+
+    let custom_not_present = build_dd_payload_with_options(
+        0,
+        2,
+        false,
+        &[],
+        DdPayloadOptions {
+            active_decode_targets_mask: Some(1),
+            custom_dti: Some(0),
+        },
+    );
+    assert_eq!(parser.parse_layer_ids(&custom_not_present), None);
+
+    let custom_required = build_dd_payload_with_options(
+        0,
+        3,
+        false,
+        &[],
+        DdPayloadOptions {
+            active_decode_targets_mask: Some(1),
+            custom_dti: Some(3),
+        },
+    );
+    assert_eq!(
+        parser.parse_layer_ids(&custom_required),
+        Some(DependencyDescriptorLayerIds {
+            temporal_id: 0,
+            spatial_id: 0,
+        })
+    );
 }
