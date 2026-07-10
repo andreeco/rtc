@@ -28,6 +28,7 @@ pub(crate) struct SctpHandlerContext {
     pub(crate) read_outs: VecDeque<TaggedRTCMessageInternal>,
     pub(crate) write_outs: VecDeque<TaggedRTCMessageInternal>,
     pub(crate) event_outs: VecDeque<RTCEventInternal>,
+    pub(crate) readable_event_count: u64,
 }
 
 impl SctpHandlerContext {
@@ -37,6 +38,7 @@ impl SctpHandlerContext {
             read_outs: VecDeque::new(),
             write_outs: VecDeque::new(),
             event_outs: VecDeque::new(),
+            readable_event_count: 0,
         }
     }
 }
@@ -148,8 +150,13 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
                                     .push_back(RTCEventInternal::SCTPStreamClosed(ch.0, id));
                             }
                             Event::Stream(StreamEvent::Readable { id }) => {
+                                self.ctx.readable_event_count += 1;
+                                let readable_event_count = self.ctx.readable_event_count;
+                                let receiver_window_before = conn.receiver_window_credit();
                                 let mut stream = conn.stream(id)?;
+                                let mut messages_read = 0usize;
                                 while let Some(chunks) = stream.read_sctp()? {
+                                    messages_read += 1;
                                     let n = chunks
                                         .read(&mut self.ctx.sctp_transport.internal_buffer)?;
                                     messages.push(SctpMessage::Inbound(DataChannelMessage {
@@ -161,6 +168,24 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
                                         ),
                                         negotiated: false,
                                     }));
+                                }
+                                drop(stream);
+                                if std::env::var("OXIDESFU_QUEUE_DEBUG")
+                                    .ok()
+                                    .is_some_and(|value| {
+                                        value == "1" || value.eq_ignore_ascii_case("true")
+                                    })
+                                    && (receiver_window_before == 0
+                                        || readable_event_count % 64 == 1)
+                                {
+                                    eprintln!(
+                                        "[sctp-handler-debug] readable={} stream={} messages={} rwnd-before={} rwnd-after={}",
+                                        readable_event_count,
+                                        id,
+                                        messages_read,
+                                        receiver_window_before,
+                                        conn.receiver_window_credit()
+                                    );
                                 }
                             }
                             Event::Stream(StreamEvent::BufferedAmountLow { id }) => {

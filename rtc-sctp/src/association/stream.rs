@@ -108,10 +108,27 @@ impl Stream<'_> {
     /// Returns EOF when the stream is reset or an error if the stream is closed
     /// otherwise.
     pub fn read_sctp(&mut self) -> Result<Option<Chunks>> {
+        let receiver_window_before = self.association.receiver_window_credit();
         if let Some(s) = self.association.streams.get_mut(&self.stream_identifier)
             && (s.state == RecvSendState::ReadWritable || s.state == RecvSendState::Readable)
         {
-            Ok(s.reassembly_queue.read())
+            let chunks = s.reassembly_queue.read();
+            let receiver_window_after = self.association.receiver_window_credit();
+            if chunks.is_some()
+                && (receiver_window_before == 0 || receiver_window_after == 0)
+                && std::env::var("OXIDESFU_QUEUE_DEBUG")
+                    .ok()
+                    .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            {
+                eprintln!(
+                    "[sctp-read-debug] side={:?} stream={} rwnd-before={} rwnd-after={}",
+                    self.association.side,
+                    self.stream_identifier,
+                    receiver_window_before,
+                    receiver_window_after
+                );
+            }
+            Ok(chunks)
         } else {
             Err(Error::ErrStreamClosed)
         }
@@ -181,24 +198,44 @@ impl Stream<'_> {
 
         let (p, _) = source.pop_chunk(self.association.max_message_size() as usize);
 
-        if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
+        let (is_buffered_amount_high, chunks, sequence_number, buffered_amount) = {
+            let s = self
+                .association
+                .streams
+                .get_mut(&self.stream_identifier)
+                .ok_or(Error::ErrStreamClosed)?;
+            let sequence_number = s.sequence_number;
+            let buffered_amount = s.buffered_amount;
             let (is_buffered_amount_high, chunks) = s.packetize(&p, ppi);
+            (
+                is_buffered_amount_high,
+                chunks,
+                sequence_number,
+                buffered_amount,
+            )
+        };
 
-            if is_buffered_amount_high {
-                trace!("StreamEvent::BufferedAmountHigh");
-                self.association
-                    .events
-                    .push_back(Event::Stream(StreamEvent::BufferedAmountHigh {
-                        id: self.stream_identifier,
-                    }))
-            }
-
-            self.association.send_payload_data(chunks)?;
-
-            Ok(p.len())
-        } else {
-            Err(Error::ErrStreamClosed)
+        if let Err(error) = self.association.send_payload_data(chunks) {
+            let s = self
+                .association
+                .streams
+                .get_mut(&self.stream_identifier)
+                .ok_or(Error::ErrStreamClosed)?;
+            s.sequence_number = sequence_number;
+            s.buffered_amount = buffered_amount;
+            return Err(error);
         }
+
+        if is_buffered_amount_high {
+            trace!("StreamEvent::BufferedAmountHigh");
+            self.association
+                .events
+                .push_back(Event::Stream(StreamEvent::BufferedAmountHigh {
+                    id: self.stream_identifier,
+                }));
+        }
+
+        Ok(p.len())
     }
 
     pub fn is_readable(&self) -> bool {

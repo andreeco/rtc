@@ -16,6 +16,51 @@ fn create_association(config: TransportConfig) -> Association {
 }
 
 #[test]
+fn block_write_becomes_writable_after_pending_chunks_are_emitted() -> Result<()> {
+    let mut association = create_association(TransportConfig::default());
+    association.set_state(AssociationState::Established);
+    association.block_write = true;
+    association.write_pending = true;
+    association.cwnd = u32::MAX;
+    association.rwnd = u32::MAX;
+    association.pending_queue.push(ChunkPayloadData {
+        beginning_fragment: true,
+        ending_fragment: true,
+        stream_identifier: 1,
+        stream_sequence_number: 1,
+        user_data: Bytes::from_static(b"block-write"),
+        ..Default::default()
+    });
+
+    let (chunks, _) = association.pop_pending_data_chunks_to_send(Instant::now());
+
+    assert_eq!(chunks.len(), 1, "the queued message should be emitted");
+    assert!(association.pending_queue.is_empty());
+    assert!(
+        !association.write_pending,
+        "emitting the final queued chunk must release the next block-write"
+    );
+    Ok(())
+}
+
+#[test]
+fn block_write_stale_flag_is_released_when_no_chunks_remain() -> Result<()> {
+    let mut association = create_association(TransportConfig::default());
+    association.set_state(AssociationState::Established);
+    association.block_write = true;
+    association.write_pending = true;
+
+    let (chunks, _) = association.pop_pending_data_chunks_to_send(Instant::now());
+
+    assert!(chunks.is_empty());
+    assert!(
+        !association.write_pending,
+        "a block-write flag with no pending or inflight chunks must not deadlock future writes"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_create_forward_tsn_forward_one_abandoned() -> Result<()> {
     let mut a = Association::default();
 

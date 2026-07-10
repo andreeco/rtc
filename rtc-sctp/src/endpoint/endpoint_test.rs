@@ -1714,9 +1714,7 @@ fn test_assoc_congestion_control_slow_reader() -> Result<()> {
         );*/
 
         if !has_rtoed {
-            let rwnd = pair
-                .server_conn_mut(server_ch)
-                .get_my_receiver_window_credit();
+            let rwnd = pair.server_conn_mut(server_ch).receiver_window_credit();
             let cwnd = pair.client_conn_mut(client_ch).cwnd;
             let cmtu = pair.client_conn_mut(client_ch).mtu;
             if cwnd > cmtu || rwnd > 0 {
