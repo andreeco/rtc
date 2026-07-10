@@ -96,6 +96,32 @@ fn test_h265_payload_keeps_single_nalus_when_called_separately() -> Result<()> {
 }
 
 #[test]
+fn test_h265_temporal_layer_id_from_payload_extracts_tid_when_present() {
+    // tid field is temporal + 1.
+    // low byte 0x03 => tid_plus_one=3 => temporal=2.
+    let tid2_payload = [0x02, 0x03, 0x00, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&tid2_payload), Some(2));
+
+    // low byte 0x01 => tid_plus_one=1 => temporal=0.
+    let tid0_payload = [0x02, 0x01, 0x00, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&tid0_payload), Some(0));
+}
+
+#[test]
+fn test_h265_temporal_layer_id_from_payload_rejects_invalid_or_out_of_range_tid() {
+    // missing NAL header
+    assert_eq!(temporal_layer_id_from_payload(&[0x02]), None);
+
+    // tid_plus_one=0 is invalid by RFC.
+    let invalid_tid_zero = [0x02, 0x00, 0x00, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&invalid_tid_zero), None);
+
+    // tid_plus_one=4 => temporal=3, outside common [0,1,2] layering.
+    let tid3_payload = [0x02, 0x04, 0x00, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&tid3_payload), None);
+}
+
+#[test]
 fn test_h265_nalu_header() -> Result<()> {
     #[derive(Default)]
     struct TestType {

@@ -24,6 +24,24 @@ pub const RTP_OUTBOUND_MTU: usize = 1200;
 pub const H265FRAGMENTATION_UNIT_HEADER_SIZE: usize = 1;
 pub const NAL_HEADER_SIZE: usize = 2;
 
+/// Extracts H265 temporal layer id from RTP payload when available.
+///
+/// H265 NAL header encodes `tid` as temporal id + 1 in the low 3 bits
+/// ([RFC 7798 §1.1.4]). Returns `None` when payload is too short,
+/// `tid` is invalid (`0`), or layer is outside common [0,1,2] range.
+pub fn temporal_layer_id_from_payload(payload: &[u8]) -> Option<u8> {
+    let high = *payload.first()?;
+    let low = *payload.get(1)?;
+    let header = H265NALUHeader::new(high, low);
+    let tid_plus_one = header.tid();
+    if tid_plus_one == 0 {
+        return None;
+    }
+
+    let temporal = tid_plus_one.saturating_sub(1);
+    (temporal <= 2).then_some(temporal)
+}
+
 #[derive(PartialEq, Hash, Debug, Copy, Clone)]
 pub enum UnitType {
     VPS = 32,
