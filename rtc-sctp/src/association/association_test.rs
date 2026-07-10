@@ -22,6 +22,43 @@ fn create_association(config: TransportConfig) -> Association {
 // window/SACK-driven path is exercised end-to-end by the `endpoint_test`
 // `test_assoc_unreliable_rexmit_*` suite.
 #[test]
+fn block_write_rejection_does_not_advance_stream_sequence() -> Result<()> {
+    let mut association = create_association(TransportConfig::default());
+    association.set_state(AssociationState::Established);
+    association.block_write = true;
+    association.write_pending = true;
+
+    {
+        let mut stream = association
+            .create_stream(1, false, PayloadProtocolIdentifier::Binary)
+            .expect("stream should be created");
+        let error = stream
+            .write_with_ppi(b"rejected", PayloadProtocolIdentifier::Binary)
+            .expect_err("a pending block-write should reject another message");
+        assert_eq!(error, Error::ErrBufferFull);
+    }
+
+    let stream = association
+        .streams
+        .get(&1)
+        .expect("stream should remain open");
+    assert_eq!(
+        stream.sequence_number, 0,
+        "rejected data must not consume an SSN"
+    );
+    assert_eq!(
+        stream.buffered_amount, 0,
+        "rejected data must not raise buffered amount"
+    );
+    assert!(
+        association.pending_queue.is_empty(),
+        "rejected data must not be queued"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_create_forward_tsn_forward_one_abandoned() -> Result<()> {
     let mut a = Association::default();
 

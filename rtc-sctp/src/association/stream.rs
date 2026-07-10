@@ -181,24 +181,44 @@ impl Stream<'_> {
 
         let (p, _) = source.pop_chunk(self.association.max_message_size() as usize);
 
-        if let Some(s) = self.association.streams.get_mut(&self.stream_identifier) {
-            let (is_buffered_amount_high, chunks) = s.packetize(&p, ppi);
+        let (is_buffered_amount_high, chunks, sequence_number, buffered_amount) = {
+            let stream = self
+                .association
+                .streams
+                .get_mut(&self.stream_identifier)
+                .ok_or(Error::ErrStreamClosed)?;
+            let sequence_number = stream.sequence_number;
+            let buffered_amount = stream.buffered_amount;
+            let (is_buffered_amount_high, chunks) = stream.packetize(&p, ppi);
+            (
+                is_buffered_amount_high,
+                chunks,
+                sequence_number,
+                buffered_amount,
+            )
+        };
 
-            if is_buffered_amount_high {
-                trace!("StreamEvent::BufferedAmountHigh");
-                self.association
-                    .events
-                    .push_back(Event::Stream(StreamEvent::BufferedAmountHigh {
-                        id: self.stream_identifier,
-                    }))
-            }
-
-            self.association.send_payload_data(chunks)?;
-
-            Ok(p.len())
-        } else {
-            Err(Error::ErrStreamClosed)
+        if let Err(error) = self.association.send_payload_data(chunks) {
+            let stream = self
+                .association
+                .streams
+                .get_mut(&self.stream_identifier)
+                .ok_or(Error::ErrStreamClosed)?;
+            stream.sequence_number = sequence_number;
+            stream.buffered_amount = buffered_amount;
+            return Err(error);
         }
+
+        if is_buffered_amount_high {
+            trace!("StreamEvent::BufferedAmountHigh");
+            self.association
+                .events
+                .push_back(Event::Stream(StreamEvent::BufferedAmountHigh {
+                    id: self.stream_identifier,
+                }));
+        }
+
+        Ok(p.len())
     }
 
     pub fn is_readable(&self) -> bool {
