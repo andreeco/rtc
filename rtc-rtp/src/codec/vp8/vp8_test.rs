@@ -200,6 +200,24 @@ fn test_vp8_payload_error() -> Result<()> {
 }
 
 #[test]
+fn test_vp8_temporal_layer_id_from_payload_extracts_tid_when_present() {
+    let payload_tid2 = [0x90, 0x20, 0x80, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&payload_tid2), Some(2));
+
+    let payload_tid0 = [0x90, 0x20, 0x00, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&payload_tid0), Some(0));
+}
+
+#[test]
+fn test_vp8_temporal_layer_id_from_payload_rejects_missing_or_out_of_range_tid() {
+    let payload_no_extension = [0x10, 0x00, 0x00, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&payload_no_extension), None);
+
+    let payload_tid3 = [0x90, 0x20, 0xC0, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&payload_tid3), None);
+}
+
+#[test]
 fn test_vp8_partition_head_checker_is_partition_head() -> Result<()> {
     let vp8 = Vp8Packet::default();
 

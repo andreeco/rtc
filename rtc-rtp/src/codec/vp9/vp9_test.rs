@@ -233,6 +233,24 @@ fn test_vp9_packet_unmarshal() -> Result<()> {
 }
 
 #[test]
+fn test_vp9_temporal_layer_id_from_payload_extracts_tid_when_present() {
+    let payload_tid2 = [0x20, 0x40, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&payload_tid2), Some(2));
+
+    let payload_tid0 = [0x20, 0x00, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&payload_tid0), Some(0));
+}
+
+#[test]
+fn test_vp9_temporal_layer_id_from_payload_rejects_missing_or_out_of_range_tid() {
+    let payload_no_l_bit = [0x00, 0x00, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&payload_no_l_bit), None);
+
+    let payload_tid3 = [0x20, 0x60, 0x00];
+    assert_eq!(temporal_layer_id_from_payload(&payload_tid3), None);
+}
+
+#[test]
 fn test_vp9_payloader_payload() -> Result<()> {
     let mut r0 = 8692;
     let mut rands = vec![];

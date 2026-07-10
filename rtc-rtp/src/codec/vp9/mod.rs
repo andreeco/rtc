@@ -13,6 +13,32 @@ const VP9HEADER_SIZE: usize = 3;
 const MAX_SPATIAL_LAYERS: u8 = 5;
 const MAX_VP9REF_PICS: usize = 3;
 
+/// Extracts VP9 temporal layer id (TID) from an RTP payload descriptor when present.
+///
+/// Returns `None` when no VP9 temporal id is present or the payload is malformed.
+pub fn temporal_layer_id_from_payload(payload: &[u8]) -> Option<u8> {
+    let descriptor = *payload.first()?;
+    let l_bit_present = descriptor & 0x20 != 0;
+    if !l_bit_present {
+        return None;
+    }
+
+    let i_bit_present = descriptor & 0x80 != 0;
+    let mut offset = 1usize;
+    if i_bit_present {
+        let pic = *payload.get(offset)?;
+        offset = offset.saturating_add(1);
+        if pic & 0x80 != 0 {
+            let _ = payload.get(offset)?;
+            offset = offset.saturating_add(1);
+        }
+    }
+
+    let layer_info = *payload.get(offset)?;
+    let tid = layer_info >> 5;
+    (tid <= 2).then_some(tid)
+}
+
 /// InitialPictureIDFn is a function that returns random initial picture ID.
 pub type InitialPictureIDFn = Arc<dyn (Fn() -> u16) + Send + Sync>;
 

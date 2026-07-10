@@ -8,6 +8,46 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 pub const VP8_HEADER_SIZE: usize = 1;
 
+/// Extracts VP8 temporal layer id (TID) from an RTP payload descriptor when present.
+///
+/// Returns `None` when no VP8 temporal id is present or the payload is malformed.
+pub fn temporal_layer_id_from_payload(payload: &[u8]) -> Option<u8> {
+    let descriptor = *payload.first()?;
+    let has_extension = descriptor & 0x80 != 0;
+    if !has_extension {
+        return None;
+    }
+
+    let extension = *payload.get(1)?;
+    let has_picture_id = extension & 0x80 != 0;
+    let has_tl0picidx = extension & 0x40 != 0;
+    let has_tid_or_keyidx = extension & 0x20 != 0;
+
+    let mut offset = 2usize;
+
+    if has_picture_id {
+        let picture_id = *payload.get(offset)?;
+        offset = offset.saturating_add(1);
+        if picture_id & 0x80 != 0 {
+            let _ = payload.get(offset)?;
+            offset = offset.saturating_add(1);
+        }
+    }
+
+    if has_tl0picidx {
+        let _ = payload.get(offset)?;
+        offset = offset.saturating_add(1);
+    }
+
+    if has_tid_or_keyidx {
+        let tid_keyidx = *payload.get(offset)?;
+        let tid = (tid_keyidx >> 6) & 0x03;
+        return (tid <= 2).then_some(tid);
+    }
+
+    None
+}
+
 /// Vp8Payloader payloads VP8 packets
 #[derive(Default, Debug, Copy, Clone)]
 pub struct Vp8Payloader {
