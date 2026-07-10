@@ -137,6 +137,15 @@ where
             && self.setting_engine.data_channel_block_write
             && !self.pipeline_context.pending_internal_writes.is_empty()
         {
+            if std::env::var("OXIDESFU_SLOW_SUB_DEBUG")
+                .ok()
+                .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            {
+                eprintln!(
+                    "[rtc-core-debug] deferred-write-full pending_internal_writes={}",
+                    self.pipeline_context.pending_internal_writes.len()
+                );
+            }
             return Err(Error::ErrBufferFull);
         }
 

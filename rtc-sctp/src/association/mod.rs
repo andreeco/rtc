@@ -1217,7 +1217,7 @@ impl Association {
         let mut stream_handle_data = false;
         if can_push {
             if self.get_or_create_stream(d.stream_identifier).is_some() {
-                if self.get_my_receiver_window_credit() > 0 {
+                if self.receiver_window_credit() > 0 {
                     // Pass the new chunk to stream level as soon as it arrives
                     self.payload_queue.push(d.clone(), self.peer_last_tsn);
                     stream_handle_data = true;
@@ -1350,6 +1350,16 @@ impl Association {
             self.rwnd = 0;
         } else {
             self.rwnd = d.advertised_receiver_window_credit - bytes_outstanding;
+        }
+        if std::env::var("OXIDESFU_QUEUE_DEBUG")
+            .ok()
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            && self.rwnd == 0
+        {
+            eprintln!(
+                "[sctp-sack-debug] side={:?} received-sack advertised_rwnd={} outstanding={} resulting_rwnd=0",
+                self.side, d.advertised_receiver_window_credit, bytes_outstanding
+            );
         }
 
         self.process_fast_retransmission(d.cumulative_tsn_ack, htna, cum_tsn_ack_point_advanced)?;
@@ -2063,7 +2073,8 @@ impl Association {
         }
     }
 
-    pub(crate) fn get_my_receiver_window_credit(&self) -> u32 {
+    /// Returns the currently available local receive-window credit.
+    pub fn receiver_window_credit(&self) -> u32 {
         let mut bytes_queued = 0;
         for s in self.streams.values() {
             bytes_queued += s.get_num_bytes_in_reassembly_queue() as u32;
@@ -2395,6 +2406,18 @@ impl Association {
                 }
 
                 if i == 0 && self.rwnd < c.user_data.len() as u32 {
+                    if std::env::var("OXIDESFU_QUEUE_DEBUG")
+                        .ok()
+                        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                    {
+                        eprintln!(
+                            "[sctp-t3-debug] side={:?} zero-window-probe tsn={} ssn={} bytes={}",
+                            self.side,
+                            c.tsn,
+                            c.stream_sequence_number,
+                            c.user_data.len()
+                        );
+                    }
                     // Send it as a zero window probe
                     done = true;
                     chunks_remaining = true;
@@ -2447,6 +2470,10 @@ impl Association {
     ) -> (Vec<ChunkPayloadData>, Vec<u16>) {
         let mut chunks = vec![];
         let mut sis_to_reset = vec![]; // stream identifiers to reset
+        if self.block_write && self.write_pending && self.pending_queue.is_empty() {
+            debug!("[{}] sctp_block_write_releasing_stale_flag", self.side);
+            self.write_pending = false;
+        }
         if !self.pending_queue.is_empty() {
             // RFC 4960 sec 6.1.  Transmission of DATA Chunks
             //   A) At any given time, the data sender MUST NOT transmit new data to
@@ -2496,6 +2523,7 @@ impl Association {
             }
 
             if self.block_write && !chunks.is_empty() && self.pending_queue.is_empty() {
+                debug!("[{}] sctp_block_write_writable", self.side);
                 self.write_pending = false;
             }
 
@@ -2664,9 +2692,40 @@ impl Association {
     }
 
     fn create_selective_ack_chunk(&mut self) -> ChunkSelectiveAck {
+        let advertised_receiver_window_credit = self.receiver_window_credit();
+        if std::env::var("OXIDESFU_QUEUE_DEBUG")
+            .ok()
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            && advertised_receiver_window_credit == 0
+        {
+            let queued_streams: Vec<_> = self
+                .streams
+                .iter()
+                .filter_map(|(id, stream)| {
+                    let queued = stream.get_num_bytes_in_reassembly_queue();
+                    (queued > 0).then_some((
+                        *id,
+                        queued,
+                        stream.reassembly_queue.next_ssn,
+                        stream
+                            .reassembly_queue
+                            .ordered
+                            .front()
+                            .map(|chunks| chunks.ssn),
+                    ))
+                })
+                .collect();
+            eprintln!(
+                "[sctp-sack-debug] side={:?} send-sack advertised=0 computed_credit={} max_credit={} cum_tsn={} queued_streams={queued_streams:?}",
+                self.side,
+                self.receiver_window_credit(),
+                self.max_receive_buffer_size,
+                self.peer_last_tsn
+            );
+        }
         ChunkSelectiveAck {
             cumulative_tsn_ack: self.peer_last_tsn,
-            advertised_receiver_window_credit: self.get_my_receiver_window_credit(),
+            advertised_receiver_window_credit,
             gap_ack_blocks: self.payload_queue.get_gap_ack_blocks(self.peer_last_tsn),
             duplicate_tsn: self.payload_queue.pop_duplicates(),
         }
@@ -2818,6 +2877,20 @@ impl Association {
 
         if self.block_write {
             if self.write_pending {
+                if std::env::var("OXIDESFU_SLOW_SUB_DEBUG")
+                    .ok()
+                    .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                {
+                    eprintln!(
+                        "[sctp-debug] side={} block-full pending_bytes={} inflight_bytes={} rwnd={} cwnd={} write_pending={}",
+                        self.side,
+                        self.pending_queue.get_num_bytes(),
+                        self.inflight_queue.get_num_bytes(),
+                        self.rwnd,
+                        self.cwnd,
+                        self.write_pending
+                    );
+                }
                 return Err(Error::ErrBufferFull);
             }
             if !chunks.is_empty() {
@@ -2909,6 +2982,17 @@ impl Association {
             }
 
             Timer::T3RTX => {
+                if std::env::var("OXIDESFU_QUEUE_DEBUG")
+                    .ok()
+                    .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                {
+                    eprintln!(
+                        "[sctp-t3-debug] side={:?} expired inflight={} rwnd={}",
+                        self.side,
+                        self.inflight_queue.get_num_bytes(),
+                        self.rwnd
+                    );
+                }
                 self.stats.inc_t3timeouts();
 
                 // RFC 4960 sec 6.3.3
