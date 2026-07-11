@@ -1359,7 +1359,7 @@ where
         kind: RtpCodecKind,
         encodings: &[RTCRtpEncodingParameters],
     ) -> Result<Vec<RTCRtpCodecParameters>> {
-        let media_engine_codecs = self.media_engine.get_codecs_by_kind(kind);
+        let media_engine_codecs = self.media_engine.get_registered_codecs_by_kind(kind);
         let mut codec_preferences = vec![];
 
         for encoding in encodings {

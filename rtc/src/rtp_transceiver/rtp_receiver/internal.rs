@@ -149,10 +149,10 @@ where
         kind: RtpCodecKind,
         media_engine: &MediaEngine,
     ) -> Vec<RTCRtpCodecParameters> {
-        let media_engine_codecs = media_engine.get_codecs_by_kind(kind);
         if codecs.is_empty() {
-            return media_engine_codecs;
+            return media_engine.get_codecs_by_kind(kind);
         }
+        let media_engine_codecs = media_engine.get_registered_codecs_by_kind(kind);
         let mut filtered_codecs = vec![];
         for codec in codecs {
             let (c, match_type) =

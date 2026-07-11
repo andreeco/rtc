@@ -215,7 +215,7 @@ where
         media_engine: &MediaEngine,
     ) -> Result<()> {
         for codec in &codecs {
-            let media_engine_codecs = media_engine.get_codecs_by_kind(self.kind());
+            let media_engine_codecs = media_engine.get_registered_codecs_by_kind(self.kind());
             let (_, match_type) =
                 codec_parameters_fuzzy_search(&codec.rtp_codec, &media_engine_codecs);
             if match_type == CodecMatch::None {
@@ -278,7 +278,7 @@ where
         let mut remote_codecs = codecs_from_media_description(media)?;
 
         // make a copy as this slice is modified
-        let mut left_codecs = media_engine.get_codecs_by_kind(self.kind);
+        let mut left_codecs = media_engine.get_registered_codecs_by_kind(self.kind);
 
         // find codec matches between what is in remote description and
         // the transceivers codecs and use payload type registered to
