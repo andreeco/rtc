@@ -992,6 +992,17 @@ impl MediaEngine {
         Ok(())
     }
 
+    pub(crate) fn get_registered_codecs_by_kind(
+        &self,
+        typ: RtpCodecKind,
+    ) -> Vec<RTCRtpCodecParameters> {
+        match typ {
+            RtpCodecKind::Video => self.video_codecs.clone(),
+            RtpCodecKind::Audio => self.audio_codecs.clone(),
+            RtpCodecKind::Unspecified => vec![],
+        }
+    }
+
     pub(crate) fn get_codecs_by_kind(&self, typ: RtpCodecKind) -> Vec<RTCRtpCodecParameters> {
         if typ == RtpCodecKind::Video {
             if self.negotiated_video {
