@@ -256,7 +256,7 @@ use crate::peer_connection::configuration::{
     RTCConfiguration, RTCIceTransportPolicy,
     offer_answer_options::{RTCAnswerOptions, RTCOfferOptions},
 };
-use crate::peer_connection::event::RTCPeerConnectionEvent;
+use crate::peer_connection::event::{RTCEventInternal, RTCPeerConnectionEvent};
 use crate::peer_connection::handler::PipelineContext;
 use crate::peer_connection::handler::dtls::DtlsHandlerContext;
 use crate::peer_connection::handler::ice::IceHandlerContext;
@@ -306,6 +306,7 @@ use ::sdp::util::ConnectionRole;
 use ice::AgentConfig;
 use ice::candidate::{Candidate, unmarshal_candidate};
 use interceptor::{Interceptor, NoopInterceptor, Registry};
+use sansio::Protocol;
 use sdp::MEDIA_SECTION_APPLICATION;
 use shared::error::{Error, Result};
 use shared::util::math_rand_alpha;
@@ -1832,7 +1833,21 @@ where
 
         self.data_channels.insert(id, data_channel);
 
-        self.trigger_negotiation_needed();
+        // Channels added after SCTP connects miss the one-time handshake event.
+        // Re-run its handler for this new Connecting channel so it dials and
+        // queues the DCEP open message on the existing association.
+        let association_handle = self
+            .sctp_transport()
+            .sctp_associations
+            .keys()
+            .next()
+            .map(|handle| handle.0);
+        if let Some(association_handle) = association_handle {
+            self.get_datachannel_handler()
+                .handle_event(RTCEventInternal::SCTPHandshakeComplete(association_handle))?;
+        } else {
+            self.trigger_negotiation_needed();
+        }
 
         Ok(RTCDataChannel {
             id,
