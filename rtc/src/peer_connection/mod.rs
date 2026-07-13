@@ -288,6 +288,7 @@ use crate::peer_connection::transport::sctp::RTCSctpTransport;
 use crate::peer_connection::transport::sctp::capabilities::SCTPTransportCapabilities;
 use crate::rtp_transceiver::direction::RTCRtpTransceiverDirection;
 use crate::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
+use crate::rtp_transceiver::rtp_receiver::internal::RTCRtpReceiverInternal;
 use crate::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 use crate::rtp_transceiver::rtp_sender::RTCRtpSender;
 use crate::rtp_transceiver::rtp_sender::internal::RTCRtpSenderInternal;
@@ -1372,6 +1373,14 @@ where
                                 && transceiver.direction() == RTCRtpTransceiverDirection::Inactive
                             {
                                 transceiver.set_direction(RTCRtpTransceiverDirection::Recvonly);
+                            }
+
+                            if transceiver.direction().has_recv()
+                                && transceiver.receiver().is_none()
+                            {
+                                transceiver
+                                    .receiver_mut()
+                                    .replace(RTCRtpReceiverInternal::new(kind, vec![]));
                             }
 
                             transceiver.set_codec_preferences_from_remote_description(
