@@ -1968,6 +1968,40 @@ where
         Ok(RTCRtpSenderId(self.add_rtp_transceiver(transceiver)))
     }
 
+    /// Adds a track to a specific sender-less transceiver MID.
+    pub fn add_track_to_mid(
+        &mut self,
+        mid: &str,
+        track: MediaStreamTrack,
+    ) -> Result<RTCRtpSenderId> {
+        let send_encodings = self.send_encodings_from_track(&track);
+        let (track, send_encodings, codec_preferences) =
+            self.normalize_sender_track(track, send_encodings)?;
+        let (id, transceiver) = self
+            .rtp_transceivers
+            .iter_mut()
+            .enumerate()
+            .find(|(_, transceiver)| {
+                !transceiver.stopped()
+                    && transceiver.kind() == track.kind()
+                    && transceiver.sender().is_none()
+                    && transceiver.mid().as_deref() == Some(mid)
+            })
+            .ok_or_else(|| Error::Other(format!("sender-less transceiver MID {mid} not found")))?;
+        let mut sender = RTCRtpSenderInternal::new(track.kind(), track, vec![], send_encodings);
+        if transceiver.get_codec_preferences().is_empty() && !codec_preferences.is_empty() {
+            transceiver.set_codec_preferences(codec_preferences, &self.media_engine)?;
+        }
+        sender.set_codec_preferences(transceiver.get_codec_preferences().to_vec());
+        transceiver.sender_mut().replace(sender);
+        transceiver.set_direction(RTCRtpTransceiverDirection::from_send_recv(
+            true,
+            transceiver.direction().has_recv(),
+        ));
+        self.trigger_negotiation_needed();
+        Ok(RTCRtpSenderId(id))
+    }
+
     /// Removes a track from the peer connection.
     ///
     /// This method stops an `RTCRtpSender` from sending media and marks its transceiver
