@@ -490,7 +490,7 @@ where
 
         let (mid, rid, rrid) =
             if let Some((mid, rid, rrid)) = self.get_rtp_header_extension_ids(rtp_header) {
-                if mid.is_empty() || (rid.is_empty() && rrid.is_empty()) {
+                if mid.is_empty() {
                     return None;
                 }
                 (mid, rid, rrid)
@@ -538,11 +538,9 @@ where
                         &parameters.rtp_parameters.header_extensions,
                     );
 
-                    let new_entry =
-                        receiver
-                            .track_mut()
-                            .set_codec_ssrc_by_rid(codec.rtp_codec, ssrc, &rid);
-                    assert!(!new_entry);
+                    receiver
+                        .track_mut()
+                        .set_codec_ssrc_by_rid(codec.rtp_codec, ssrc, &rid);
 
                     let track_id = receiver.track().track_id().to_owned();
 
@@ -574,7 +572,7 @@ where
                                     track_id: track_id.clone(),
                                     stream_ids: vec![receiver.track().stream_id().to_owned()],
                                     ssrc,
-                                    rid: Some(rid),
+                                    rid: (!rid.is_empty()).then_some(rid),
                                 },
                             )),
                         ));
@@ -685,15 +683,12 @@ where
             return None;
         }
 
-        // Get RID extension ID
-        let (rid_extension_id, audio_supported, video_supported) = self
-            .media_engine
-            .get_header_extension_id(RTCRtpHeaderExtensionCapability {
-                uri: ::sdp::extmap::SDES_RTP_STREAM_ID_URI.to_owned(),
-            });
-        if !audio_supported && !video_supported {
-            return None;
-        }
+        // RID is optional: a non-simulcast stream is identified by MID and SSRC.
+        let (rid_extension_id, _, _) =
+            self.media_engine
+                .get_header_extension_id(RTCRtpHeaderExtensionCapability {
+                    uri: ::sdp::extmap::SDES_RTP_STREAM_ID_URI.to_owned(),
+                });
 
         // Get RRID extension ID
         let (rrid_extension_id, _, _) =
