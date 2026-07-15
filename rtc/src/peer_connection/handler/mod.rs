@@ -119,6 +119,8 @@ pub(crate) struct PipelineContext {
     pub(crate) write_outs: VecDeque<TaggedBytesMut>,
     pub(crate) pending_internal_writes: VecDeque<TaggedRTCMessageInternal>,
     pub(crate) event_outs: VecDeque<RTCPeerConnectionEvent>,
+    pub(crate) scratch_write_internal: VecDeque<TaggedRTCMessageInternal>,
+    pub(crate) scratch_retry_internal: VecDeque<TaggedRTCMessageInternal>,
 
     // Statistics accumulator
     pub(crate) stats: RTCStatsAccumulator,
@@ -335,12 +337,16 @@ where
     }
 
     fn poll_write(&mut self) -> Option<Self::Wout> {
-        let mut intermediate_wouts = VecDeque::new();
+        let mut intermediate_wouts =
+            std::mem::take(&mut self.pipeline_context.scratch_write_internal);
+        intermediate_wouts.clear();
         while let Some(msg) = self.pipeline_context.pending_internal_writes.pop_front() {
             intermediate_wouts.push_back(msg);
         }
 
-        let mut deferred_retry_wouts = VecDeque::new();
+        let mut deferred_retry_wouts =
+            std::mem::take(&mut self.pipeline_context.scratch_retry_internal);
+        deferred_retry_wouts.clear();
         for_each_handler!(reverse: process_handler!(self, handler, {
             while let Some(msg) = intermediate_wouts.pop_front() {
                 let retry_msg = msg.clone();
@@ -373,6 +379,9 @@ where
                 self.pipeline_context.pending_internal_writes.push_back(msg);
             }
         }
+
+        self.pipeline_context.scratch_write_internal = intermediate_wouts;
+        self.pipeline_context.scratch_retry_internal = deferred_retry_wouts;
 
         self.pipeline_context.write_outs.pop_front()
     }
