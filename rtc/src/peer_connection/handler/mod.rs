@@ -7,7 +7,6 @@ pub(crate) mod interceptor;
 pub(crate) mod sctp;
 pub(crate) mod srtp;
 
-use crate::peer_connection::RTCPeerConnection;
 use crate::peer_connection::event::RTCPeerConnectionEvent;
 use crate::peer_connection::event::{RTCEvent, RTCEventInternal};
 use crate::peer_connection::handler::datachannel::{DataChannelHandler, DataChannelHandlerContext};
@@ -27,6 +26,7 @@ use crate::peer_connection::message::{
 };
 use crate::peer_connection::state::peer_connection_state::RTCPeerConnectionState;
 use crate::peer_connection::state::signaling_state::RTCSignalingState;
+use crate::peer_connection::{InternalPollWriteBatchResult, RTCPeerConnection};
 use crate::statistics::accumulator::RTCStatsAccumulator;
 use ::interceptor::Interceptor;
 use ::interceptor::Packet;
@@ -248,6 +248,83 @@ where
         Ok(())
     }
 
+    /// Drains at most `max_writes` immediately sendable datagrams from the outbound pipeline.
+    ///
+    /// This is an internal driver hop: it retains the core's deferred FIFO ownership
+    /// on `ErrBufferFull` and reports only datagrams that are already ready for I/O.
+    /// A false result does not discard deferred work; that work needs a later core
+    /// event (for example an SCTP acknowledgement) before it can become sendable.
+    #[doc(hidden)]
+    pub fn poll_write_batch(
+        &mut self,
+        max_writes: usize,
+        writes: &mut Vec<TaggedBytesMut>,
+    ) -> InternalPollWriteBatchResult {
+        writes.clear();
+        if max_writes == 0 {
+            return InternalPollWriteBatchResult {
+                more_writes_pending: !self.pipeline_context.write_outs.is_empty(),
+            };
+        }
+
+        if self.pipeline_context.write_outs.is_empty() {
+            self.poll_write_pipeline();
+        }
+
+        while writes.len() < max_writes {
+            let Some(write) = self.pipeline_context.write_outs.pop_front() else {
+                break;
+            };
+            writes.push(write);
+        }
+
+        InternalPollWriteBatchResult {
+            more_writes_pending: !self.pipeline_context.write_outs.is_empty(),
+        }
+    }
+
+    fn poll_write_pipeline(&mut self) {
+        let mut intermediate_wouts =
+            std::mem::take(&mut self.pipeline_context.scratch_write_internal);
+        intermediate_wouts.clear();
+        while let Some(msg) = self.pipeline_context.pending_internal_writes.pop_front() {
+            intermediate_wouts.push_back(msg);
+        }
+
+        let mut deferred_retry_wouts =
+            std::mem::take(&mut self.pipeline_context.scratch_retry_internal);
+        deferred_retry_wouts.clear();
+        for_each_handler!(reverse: process_handler!(self, handler, {
+            process_write_stage(
+                &mut intermediate_wouts,
+                &mut deferred_retry_wouts,
+                |msg| handler.handle_write_losslessly(msg),
+            );
+            while let Some(msg) = handler.poll_write() {
+                intermediate_wouts.push_back(msg);
+            }
+        }));
+
+        while let Some(msg) = deferred_retry_wouts.pop_front() {
+            self.pipeline_context.pending_internal_writes.push_back(msg);
+        }
+
+        while let Some(msg) = intermediate_wouts.pop_front() {
+            if let RTCMessageInternal::Raw(message) = msg.message {
+                self.pipeline_context.write_outs.push_back(TaggedBytesMut {
+                    now: msg.now,
+                    transport: msg.transport,
+                    message,
+                });
+            } else {
+                self.pipeline_context.pending_internal_writes.push_back(msg);
+            }
+        }
+
+        self.pipeline_context.scratch_write_internal = intermediate_wouts;
+        self.pipeline_context.scratch_retry_internal = deferred_retry_wouts;
+    }
+
     /// Writes a raw RTP packet into the outbound pipeline.
     pub fn write_rtp_packet(&mut self, packet: rtp::Packet) -> Result<(), Error> {
         self.handle_write_internal_message(
@@ -419,47 +496,9 @@ where
     }
 
     fn poll_write(&mut self) -> Option<Self::Wout> {
-        let mut intermediate_wouts =
-            std::mem::take(&mut self.pipeline_context.scratch_write_internal);
-        intermediate_wouts.clear();
-        while let Some(msg) = self.pipeline_context.pending_internal_writes.pop_front() {
-            intermediate_wouts.push_back(msg);
+        if self.pipeline_context.write_outs.is_empty() {
+            self.poll_write_pipeline();
         }
-
-        let mut deferred_retry_wouts =
-            std::mem::take(&mut self.pipeline_context.scratch_retry_internal);
-        deferred_retry_wouts.clear();
-        for_each_handler!(reverse: process_handler!(self, handler, {
-            process_write_stage(
-                &mut intermediate_wouts,
-                &mut deferred_retry_wouts,
-                |msg| handler.handle_write_losslessly(msg),
-            );
-            while let Some(msg) = handler.poll_write() {
-                intermediate_wouts.push_back(msg);
-            }
-        }));
-
-        while let Some(msg) = deferred_retry_wouts.pop_front() {
-            self.pipeline_context.pending_internal_writes.push_back(msg);
-        }
-
-        // Final poll write out to pipeline's write out
-        while let Some(msg) = intermediate_wouts.pop_front() {
-            if let RTCMessageInternal::Raw(message) = msg.message {
-                self.pipeline_context.write_outs.push_back(TaggedBytesMut {
-                    now: msg.now,
-                    transport: msg.transport,
-                    message,
-                });
-            } else {
-                self.pipeline_context.pending_internal_writes.push_back(msg);
-            }
-        }
-
-        self.pipeline_context.scratch_write_internal = intermediate_wouts;
-        self.pipeline_context.scratch_retry_internal = deferred_retry_wouts;
-
         self.pipeline_context.write_outs.pop_front()
     }
 
@@ -675,6 +714,44 @@ mod tests {
             assert_eq!(retry_seen, expected[blocked_at..]);
             assert!(deferred_retry_wouts.is_empty());
         }
+    }
+
+    #[test]
+    fn bounded_core_drain_preserves_fifo_and_reports_remaining_work() {
+        let mut peer_connection = crate::peer_connection::RTCPeerConnectionBuilder::new()
+            .build()
+            .expect("default peer connection builds");
+        for marker in [b"rtp".as_slice(), b"rtcp", b"data"] {
+            peer_connection
+                .pipeline_context
+                .write_outs
+                .push_back(TaggedBytesMut {
+                    now: Instant::now(),
+                    transport: Default::default(),
+                    message: BytesMut::from(marker),
+                });
+        }
+
+        let mut writes = Vec::new();
+        let first = peer_connection.poll_write_batch(2, &mut writes);
+        assert_eq!(
+            writes
+                .iter()
+                .map(|write| write.message.as_ref())
+                .collect::<Vec<_>>(),
+            vec![b"rtp".as_slice(), b"rtcp"]
+        );
+        assert!(first.more_writes_pending);
+
+        let second = peer_connection.poll_write_batch(2, &mut writes);
+        assert_eq!(
+            writes
+                .iter()
+                .map(|write| write.message.as_ref())
+                .collect::<Vec<_>>(),
+            vec![b"data".as_slice()]
+        );
+        assert!(!second.more_writes_pending);
     }
 
     #[test]

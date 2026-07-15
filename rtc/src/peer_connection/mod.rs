@@ -615,6 +615,17 @@ where
     }
 }
 
+/// Result of an internal bounded outbound pipeline drain.
+///
+/// This is intended for the async `webrtc` driver. It is public only because
+/// the driver is a separate crate; it is not part of the supported application API.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InternalPollWriteBatchResult {
+    /// Whether immediately sendable datagrams remain after this drain.
+    pub more_writes_pending: bool,
+}
+
 /// The `RTCPeerConnection` interface represents a WebRTC connection between the local computer
 /// and a remote peer. It provides methods to connect to a remote peer, maintain and monitor
 /// the connection, and close the connection once it's no longer needed.
