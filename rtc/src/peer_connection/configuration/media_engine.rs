@@ -313,7 +313,7 @@ impl MediaEngine {
     /// - VP8 with RTCP feedback
     /// - VP9 (multiple profiles) with RTCP feedback
     /// - H.264 (multiple profiles/packetization modes) with RTCP feedback
-    /// - AV1 with RTCP feedback  
+    /// - AV1 with RTCP feedback
     /// - H.265/HEVC with RTCP feedback
     /// - ULP FEC (forward error correction)
     ///
@@ -506,10 +506,12 @@ impl MediaEngine {
                     mime_type: MIME_TYPE_AV1.to_owned(),
                     clock_rate: 90000,
                     channels: 0,
-                    sdp_fmtp_line: "profile-id=0".to_owned(),
+                    // RFC 9364 infers Main profile (0) when `profile` is omitted.
+                    // This matches Pion/LiveKit's default AV1 capability.
+                    sdp_fmtp_line: "".to_owned(),
                     rtcp_feedback: video_rtcp_feedback.clone(),
                 },
-                payload_type: 41,
+                payload_type: 45,
             },
             RTCRtpCodecParameters {
                 rtp_codec: RTCRtpCodec {
@@ -1145,5 +1147,34 @@ impl MediaEngine {
         }
 
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_av1_codec_uses_livekit_pion_main_profile_capability() {
+        let mut media_engine = MediaEngine::default();
+        media_engine
+            .register_default_codecs()
+            .expect("default codecs should register");
+        let av1 = media_engine
+            .video_codecs
+            .iter()
+            .find(|codec| {
+                codec
+                    .rtp_codec
+                    .mime_type
+                    .eq_ignore_ascii_case(MIME_TYPE_AV1)
+            })
+            .expect("default codecs should include AV1");
+
+        assert_eq!(av1.payload_type, 45);
+        assert!(
+            av1.rtp_codec.sdp_fmtp_line.is_empty(),
+            "AV1 omits profile because the RTP specification infers Main profile (0)"
+        );
     }
 }
