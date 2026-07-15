@@ -313,7 +313,7 @@ impl MediaEngine {
     /// - VP8 with RTCP feedback
     /// - VP9 (multiple profiles) with RTCP feedback
     /// - H.264 (multiple profiles/packetization modes) with RTCP feedback
-    /// - AV1 with RTCP feedback  
+    /// - AV1 with RTCP feedback
     /// - H.265/HEVC with RTCP feedback
     /// - ULP FEC (forward error correction)
     ///
@@ -506,10 +506,10 @@ impl MediaEngine {
                     mime_type: MIME_TYPE_AV1.to_owned(),
                     clock_rate: 90000,
                     channels: 0,
-                    sdp_fmtp_line: "profile-id=0".to_owned(),
+                    sdp_fmtp_line: String::new(),
                     rtcp_feedback: video_rtcp_feedback.clone(),
                 },
-                payload_type: 41,
+                payload_type: 45,
             },
             RTCRtpCodecParameters {
                 rtp_codec: RTCRtpCodec {
@@ -1145,5 +1145,25 @@ impl MediaEngine {
         }
 
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_av1_codec_matches_livekit_compatible_payload_type_and_fmtp() {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs().unwrap();
+
+        let av1 = media_engine
+            .get_registered_codecs_by_kind(RtpCodecKind::Video)
+            .into_iter()
+            .find(|codec| codec.rtp_codec.mime_type == MIME_TYPE_AV1)
+            .expect("default video codecs should include AV1");
+
+        assert_eq!(av1.payload_type, 45);
+        assert!(av1.rtp_codec.sdp_fmtp_line.is_empty());
     }
 }

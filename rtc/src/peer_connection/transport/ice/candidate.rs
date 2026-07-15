@@ -196,7 +196,7 @@ impl RTCIceCandidate {
 
         Ok(RTCIceCandidateInit {
             candidate: format!("candidate:{}", candidate.marshal()),
-            sdp_mid: Some("".to_owned()),
+            sdp_mid: Some("0".to_owned()),
             sdp_mline_index: Some(0u16),
             username_fragment: None,
             url: None,
@@ -243,6 +243,27 @@ pub struct RTCIceCandidateInit {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn generated_ice_candidates_use_the_bundle_mid() {
+        let candidate = RTCIceCandidate {
+            id: "candidate-id".to_owned(),
+            foundation: "foundation".to_owned(),
+            priority: 2_130_706_431,
+            address: "127.0.0.1".to_owned(),
+            protocol: RTCIceProtocol::Udp,
+            port: 9,
+            typ: RTCIceCandidateType::Host,
+            component: 1,
+            related_address: String::new(),
+            related_port: 0,
+            tcp_type: RTCIceTcpCandidateType::Unspecified,
+            relay_protocol: RTCIceServerTransportProtocol::Unspecified,
+            url: None,
+        };
+
+        assert_eq!(candidate.to_json().unwrap().sdp_mid.as_deref(), Some("0"));
+    }
 
     #[test]
     fn test_ice_candidate_serialization() {
