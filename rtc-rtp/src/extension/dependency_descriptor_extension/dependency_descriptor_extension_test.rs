@@ -135,6 +135,45 @@ fn dependency_descriptor_parser_reads_template_temporal_layer() {
 }
 
 #[test]
+fn dependency_descriptor_parser_reports_verified_frame_start_metadata() {
+    let mut parser = DependencyDescriptorParser::default();
+    let payload = build_dd_payload(1, 1, true, &[1, 3]);
+
+    assert_eq!(
+        parser.parse_packet_metadata(&payload),
+        Some(DependencyDescriptorPacketMetadata {
+            layer_ids: DependencyDescriptorLayerIds {
+                temporal_id: 1,
+                spatial_id: 0,
+            },
+            first_packet_in_frame: true,
+            last_packet_in_frame: true,
+        })
+    );
+}
+
+#[test]
+fn dependency_descriptor_parser_preserves_non_first_frame_boundary_metadata() {
+    let mut parser = DependencyDescriptorParser::default();
+    let with_structure = build_dd_payload(0, 1, true, &[3]);
+    assert!(parser.parse_packet_metadata(&with_structure).is_some());
+
+    let mut follow_up = build_dd_payload(0, 2, false, &[]);
+    follow_up[0] &= 0x7f; // first_packet_in_frame = false
+    assert_eq!(
+        parser.parse_packet_metadata(&follow_up),
+        Some(DependencyDescriptorPacketMetadata {
+            layer_ids: DependencyDescriptorLayerIds {
+                temporal_id: 0,
+                spatial_id: 0,
+            },
+            first_packet_in_frame: false,
+            last_packet_in_frame: true,
+        })
+    );
+}
+
+#[test]
 fn dependency_descriptor_parser_reads_template_spatial_layer() {
     let mut parser = DependencyDescriptorParser::default();
 

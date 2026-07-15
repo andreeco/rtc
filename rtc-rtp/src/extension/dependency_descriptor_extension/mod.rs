@@ -16,6 +16,18 @@ pub struct DependencyDescriptorLayerIds {
     pub spatial_id: u8,
 }
 
+/// Verified dependency-descriptor metadata for one RTP packet.
+///
+/// A value is returned only when the descriptor resolves to an active decode target. Callers can
+/// use `first_packet_in_frame` as a descriptor-backed frame boundary; it is not a claim that the
+/// frame is an intra/key frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DependencyDescriptorPacketMetadata {
+    pub layer_ids: DependencyDescriptorLayerIds,
+    pub first_packet_in_frame: bool,
+    pub last_packet_in_frame: bool,
+}
+
 const DTI_NOT_PRESENT: u8 = 0;
 
 #[derive(Debug, Clone)]
@@ -46,22 +58,33 @@ impl DependencyDescriptorParser {
     ///
     /// Parsing is fail-safe: parser state is updated only when the payload parses successfully.
     pub fn parse_layer_ids(&mut self, payload: &[u8]) -> Option<DependencyDescriptorLayerIds> {
+        self.parse_packet_metadata(payload)
+            .map(|metadata| metadata.layer_ids)
+    }
+
+    /// Parses one descriptor into active-decode-target layer and frame-boundary metadata.
+    ///
+    /// Parsing is fail-safe: parser state is updated only when the payload parses successfully.
+    pub fn parse_packet_metadata(
+        &mut self,
+        payload: &[u8],
+    ) -> Option<DependencyDescriptorPacketMetadata> {
         let mut candidate_structure = self.structure.clone();
-        let ids = parse_layer_ids_internal(payload, &mut candidate_structure)?;
+        let metadata = parse_packet_metadata_internal(payload, &mut candidate_structure)?;
         self.structure = candidate_structure;
-        Some(ids)
+        Some(metadata)
     }
 }
 
-fn parse_layer_ids_internal(
+fn parse_packet_metadata_internal(
     payload: &[u8],
     structure: &mut Option<FrameDependencyStructure>,
-) -> Option<DependencyDescriptorLayerIds> {
+) -> Option<DependencyDescriptorPacketMetadata> {
     let mut reader = BitReader::new(payload);
 
     // mandatory fields
-    let _first_packet_in_frame = reader.read_bool()?;
-    let _last_packet_in_frame = reader.read_bool()?;
+    let first_packet_in_frame = reader.read_bool()?;
+    let last_packet_in_frame = reader.read_bool()?;
     let frame_dependency_template_id = reader.read_bits_u8(6)?;
     let _frame_number = reader.read_bits(16)?;
 
@@ -134,7 +157,11 @@ fn parse_layer_ids_internal(
         return None;
     }
 
-    Some(layer_ids)
+    Some(DependencyDescriptorPacketMetadata {
+        layer_ids,
+        first_packet_in_frame,
+        last_packet_in_frame,
+    })
 }
 
 fn parse_structure(reader: &mut BitReader<'_>) -> Option<FrameDependencyStructure> {
