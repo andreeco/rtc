@@ -1201,7 +1201,9 @@ mod default_codec_tests {
                 rtx_apts.push(apt);
             } else if UniCase::new(codec.rtp_codec.mime_type.as_str())
                 != UniCase::new("video/ulpfec")
+                && UniCase::new(codec.rtp_codec.mime_type.as_str()) != UniCase::new(MIME_TYPE_AV1)
             {
+                // The upstream default AV1 capability has no RTX pairing.
                 primary_payload_types.push(codec.payload_type);
             }
         }
@@ -1245,7 +1247,12 @@ mod default_codec_tests {
         let av1 = media_engine
             .video_codecs
             .iter()
-            .find(|codec| codec.rtp_codec.mime_type.eq_ignore_ascii_case(MIME_TYPE_AV1))
+            .find(|codec| {
+                codec
+                    .rtp_codec
+                    .mime_type
+                    .eq_ignore_ascii_case(MIME_TYPE_AV1)
+            })
             .expect("default codecs should include AV1");
 
         assert_eq!(av1.payload_type, 45);
