@@ -1,3 +1,4 @@
+use super::{HandlerWriteResult, LosslessWrite};
 use crate::peer_connection::event::RTCEventInternal;
 use crate::peer_connection::event::RTCPeerConnectionEvent;
 use crate::peer_connection::event::data_channel_event::RTCDataChannelEvent;
@@ -276,121 +277,10 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
     }
 
     fn handle_write(&mut self, msg: TaggedRTCMessageInternal) -> Result<()> {
-        if let RTCMessageInternal::Dtls(DTLSMessage::Sctp(message)) = msg.message {
-            debug!(
-                "send sctp data channel message to {:?}",
-                msg.transport.peer_addr
-            );
-
-            let mut transmits = vec![];
-            if message.payload.len() > self.ctx.sctp_transport.internal_buffer.len() {
-                return Err(Error::ErrOutboundPacketTooLarge);
-            }
-
-            if let Some(conn) = self
-                .ctx
-                .sctp_transport
-                .sctp_associations
-                .get_mut(&AssociationHandle(message.association_handle))
-            {
-                let mut is_dcep_internal_control_message = false;
-                if message.ppi == PayloadProtocolIdentifier::Dcep {
-                    let mut data_buf = &message.payload[..];
-                    let dcep_message = Message::unmarshal(&mut data_buf)?;
-                    match dcep_message {
-                        Message::DataChannelOpen(data_channel_open) => {
-                            debug!(
-                                "sctp data channel open {:?} for stream id {}",
-                                data_channel_open, message.stream_id
-                            );
-                            let (unordered, reliability_type) =
-                                ::datachannel::data_channel::DataChannel::get_reliability_params(
-                                    data_channel_open.channel_type,
-                                );
-                            let mut stream = conn.open_stream(message.stream_id, message.ppi)?;
-                            stream.set_reliability_params(
-                                unordered,
-                                reliability_type,
-                                data_channel_open.reliability_parameter,
-                            )?;
-
-                            // Out-of-band negotiated channels (W3C WebRTC
-                            // `RTCDataChannelInit.negotiated`) only open the SCTP
-                            // stream locally; the DCEP handshake must not be sent
-                            // to the peer, which already created its own channel
-                            // with the pre-agreed stream id.
-                            if message.negotiated {
-                                is_dcep_internal_control_message = true;
-                            }
-                        }
-                        Message::DataChannelClose(_) => {
-                            is_dcep_internal_control_message = true;
-                            debug!(
-                                "sctp data channel close for stream id {}",
-                                message.stream_id
-                            );
-                            let mut stream = conn.stream(message.stream_id)?;
-                            stream.close()?;
-
-                            self.ctx
-                                .event_outs
-                                .push_back(RTCEventInternal::SCTPStreamClosed(
-                                    message.association_handle,
-                                    message.stream_id,
-                                ));
-                        }
-                        Message::DataChannelThreshold(data_channel_threshold) => {
-                            is_dcep_internal_control_message = true;
-                            debug!(
-                                "sctp data channel set threshold {:?} for stream id {}",
-                                data_channel_threshold, message.stream_id
-                            );
-                            let mut stream = conn.stream(message.stream_id)?;
-                            match data_channel_threshold {
-                                DataChannelThreshold::Low(threshold) => {
-                                    stream.set_buffered_amount_low_threshold(threshold as usize)?;
-                                }
-                                DataChannelThreshold::High(threshold) => {
-                                    stream
-                                        .set_buffered_amount_high_threshold(threshold as usize)?;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                let mut stream = conn.stream(message.stream_id)?;
-                if !is_dcep_internal_control_message && stream.is_writable() {
-                    stream.write_with_ppi(&message.payload, message.ppi)?;
-                }
-
-                while let Some(x) = conn.poll_transmit(msg.now) {
-                    transmits.extend(split_transmit(x));
-                }
-            } else {
-                return Err(Error::ErrAssociationNotExisted);
-            }
-
-            for transmit in transmits {
-                if let Payload::RawEncode(raw_data) = transmit.message {
-                    for raw in raw_data {
-                        self.ctx.write_outs.push_back(TaggedRTCMessageInternal {
-                            now: transmit.now,
-                            transport: transmit.transport,
-                            message: RTCMessageInternal::Dtls(DTLSMessage::Raw(BytesMut::from(
-                                &raw[..],
-                            ))),
-                        });
-                    }
-                }
-            }
-        } else {
-            // Bypass
-            debug!("Bypass sctp write {:?}", msg.transport.peer_addr);
-            self.ctx.write_outs.push_back(msg);
+        match self.handle_write_losslessly(msg)? {
+            HandlerWriteResult::Consumed => Ok(()),
+            HandlerWriteResult::Retry(_) => Err(Error::ErrBufferFull),
         }
-        Ok(())
     }
 
     fn poll_write(&mut self) -> Option<Self::Wout> {
@@ -503,6 +393,111 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
 
     fn close(&mut self) -> Result<()> {
         Ok(())
+    }
+}
+
+impl LosslessWrite for SctpHandler<'_> {
+    fn handle_write_losslessly(
+        &mut self,
+        msg: TaggedRTCMessageInternal,
+    ) -> Result<HandlerWriteResult> {
+        let RTCMessageInternal::Dtls(DTLSMessage::Sctp(message)) = &msg.message else {
+            debug!("Bypass sctp write {:?}", msg.transport.peer_addr);
+            self.ctx.write_outs.push_back(msg);
+            return Ok(HandlerWriteResult::Consumed);
+        };
+
+        debug!(
+            "send sctp data channel message to {:?}",
+            msg.transport.peer_addr
+        );
+        if message.payload.len() > self.ctx.sctp_transport.internal_buffer.len() {
+            return Err(Error::ErrOutboundPacketTooLarge);
+        }
+
+        let mut transmits = vec![];
+        let Some(conn) = self
+            .ctx
+            .sctp_transport
+            .sctp_associations
+            .get_mut(&AssociationHandle(message.association_handle))
+        else {
+            return Err(Error::ErrAssociationNotExisted);
+        };
+
+        let mut is_dcep_internal_control_message = false;
+        if message.ppi == PayloadProtocolIdentifier::Dcep {
+            let mut data_buf = &message.payload[..];
+            match Message::unmarshal(&mut data_buf)? {
+                Message::DataChannelOpen(data_channel_open) => {
+                    let (unordered, reliability_type) =
+                        ::datachannel::data_channel::DataChannel::get_reliability_params(
+                            data_channel_open.channel_type,
+                        );
+                    let mut stream = conn.open_stream(message.stream_id, message.ppi)?;
+                    stream.set_reliability_params(
+                        unordered,
+                        reliability_type,
+                        data_channel_open.reliability_parameter,
+                    )?;
+                    is_dcep_internal_control_message = message.negotiated;
+                }
+                Message::DataChannelClose(_) => {
+                    is_dcep_internal_control_message = true;
+                    conn.stream(message.stream_id)?.close()?;
+                    self.ctx
+                        .event_outs
+                        .push_back(RTCEventInternal::SCTPStreamClosed(
+                            message.association_handle,
+                            message.stream_id,
+                        ));
+                }
+                Message::DataChannelThreshold(data_channel_threshold) => {
+                    is_dcep_internal_control_message = true;
+                    let mut stream = conn.stream(message.stream_id)?;
+                    match data_channel_threshold {
+                        DataChannelThreshold::Low(threshold) => {
+                            stream.set_buffered_amount_low_threshold(threshold as usize)?;
+                        }
+                        DataChannelThreshold::High(threshold) => {
+                            stream.set_buffered_amount_high_threshold(threshold as usize)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut stream = conn.stream(message.stream_id)?;
+        if !is_dcep_internal_control_message && stream.is_writable() {
+            if let Err(err) = stream.write_with_ppi(&message.payload, message.ppi) {
+                if err == Error::ErrBufferFull {
+                    return Ok(HandlerWriteResult::Retry(msg));
+                }
+                return Err(err);
+            }
+        }
+        drop(stream);
+
+        while let Some(transmit) = conn.poll_transmit(msg.now) {
+            transmits.extend(split_transmit(transmit));
+        }
+
+        for transmit in transmits {
+            if let Payload::RawEncode(raw_data) = transmit.message {
+                for raw in raw_data {
+                    self.ctx.write_outs.push_back(TaggedRTCMessageInternal {
+                        now: transmit.now,
+                        transport: transmit.transport,
+                        message: RTCMessageInternal::Dtls(DTLSMessage::Raw(BytesMut::from(
+                            &raw[..],
+                        ))),
+                    });
+                }
+            }
+        }
+
+        Ok(HandlerWriteResult::Consumed)
     }
 }
 

@@ -39,6 +39,88 @@ use std::time::{Duration, Instant};
 
 pub(crate) const DEFAULT_TIMEOUT_DURATION: Duration = Duration::from_secs(86400); // 1 day duration
 
+enum HandlerWriteResult {
+    Consumed,
+    Retry(TaggedRTCMessageInternal),
+}
+
+trait LosslessWrite {
+    fn handle_write_losslessly(
+        &mut self,
+        msg: TaggedRTCMessageInternal,
+    ) -> Result<HandlerWriteResult, Error>;
+}
+
+macro_rules! impl_lossless_write {
+    ($($handler:ty),+ $(,)?) => {
+        $(
+            impl LosslessWrite for $handler {
+                fn handle_write_losslessly(
+                    &mut self,
+                    msg: TaggedRTCMessageInternal,
+                ) -> Result<HandlerWriteResult, Error> {
+                    self.handle_write(msg)?;
+                    Ok(HandlerWriteResult::Consumed)
+                }
+            }
+        )+
+    };
+}
+
+impl_lossless_write!(
+    DemuxerHandler<'_>,
+    IceHandler<'_>,
+    DtlsHandler<'_>,
+    DataChannelHandler<'_>,
+    SrtpHandler<'_>,
+);
+
+impl<I> LosslessWrite for InterceptorHandler<'_, I>
+where
+    I: Interceptor,
+{
+    fn handle_write_losslessly(
+        &mut self,
+        msg: TaggedRTCMessageInternal,
+    ) -> Result<HandlerWriteResult, Error> {
+        self.handle_write(msg)?;
+        Ok(HandlerWriteResult::Consumed)
+    }
+}
+
+impl<I> LosslessWrite for EndpointHandler<'_, I>
+where
+    I: Interceptor,
+{
+    fn handle_write_losslessly(
+        &mut self,
+        msg: TaggedRTCMessageInternal,
+    ) -> Result<HandlerWriteResult, Error> {
+        self.handle_write(msg)?;
+        Ok(HandlerWriteResult::Consumed)
+    }
+}
+
+fn process_write_stage<F>(
+    intermediate_wouts: &mut VecDeque<TaggedRTCMessageInternal>,
+    deferred_retry_wouts: &mut VecDeque<TaggedRTCMessageInternal>,
+    mut handle_write: F,
+) where
+    F: FnMut(TaggedRTCMessageInternal) -> Result<HandlerWriteResult, Error>,
+{
+    while let Some(msg) = intermediate_wouts.pop_front() {
+        match handle_write(msg) {
+            Ok(HandlerWriteResult::Consumed) => {}
+            Ok(HandlerWriteResult::Retry(msg)) => {
+                deferred_retry_wouts.push_back(msg);
+                deferred_retry_wouts.append(intermediate_wouts);
+                break;
+            }
+            Err(err) => warn!("handler.handle_write got error: {err}"),
+        }
+    }
+}
+
 /// Forward handler list - invokes callback with handler list
 macro_rules! forward_handlers {
     ($callback:ident!($($args:tt)*)) => {
@@ -348,16 +430,11 @@ where
             std::mem::take(&mut self.pipeline_context.scratch_retry_internal);
         deferred_retry_wouts.clear();
         for_each_handler!(reverse: process_handler!(self, handler, {
-            while let Some(msg) = intermediate_wouts.pop_front() {
-                let retry_msg = msg.clone();
-                if let Err(err) = handler.handle_write(msg) {
-                    if err == Error::ErrBufferFull {
-                        deferred_retry_wouts.push_back(retry_msg);
-                        break;
-                    }
-                    warn!("{}.handle_write got error: {}", handler.name(), err);
-                }
-            }
+            process_write_stage(
+                &mut intermediate_wouts,
+                &mut deferred_retry_wouts,
+                |msg| handler.handle_write_losslessly(msg),
+            );
             while let Some(msg) = handler.poll_write() {
                 intermediate_wouts.push_back(msg);
             }
@@ -510,5 +587,128 @@ where
         self.update_connection_state(true);
 
         flatten_errs(close_errs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+
+    fn tagged_messages() -> VecDeque<TaggedRTCMessageInternal> {
+        [
+            RTCMessageInternal::Rtp(RTPMessage::Packet(Packet::Rtp(rtp::Packet::default()))),
+            RTCMessageInternal::Rtp(RTPMessage::Packet(Packet::Rtcp(vec![Box::new(
+                PictureLossIndication {
+                    sender_ssrc: 1,
+                    media_ssrc: 2,
+                },
+            )]))),
+            RTCMessageInternal::Dtls(DTLSMessage::DataChannel(ApplicationMessage {
+                data_channel_id: 3,
+                data_channel_event: DataChannelEvent::Message(
+                    crate::data_channel::RTCDataChannelMessage {
+                        is_string: false,
+                        data: BytesMut::from(&b"data"[..]),
+                    },
+                ),
+            })),
+        ]
+        .into_iter()
+        .map(|message| TaggedRTCMessageInternal {
+            now: Instant::now(),
+            transport: Default::default(),
+            message,
+        })
+        .collect()
+    }
+
+    fn message_kind(msg: &TaggedRTCMessageInternal) -> &'static str {
+        match &msg.message {
+            RTCMessageInternal::Rtp(RTPMessage::Packet(Packet::Rtp(_))) => "rtp",
+            RTCMessageInternal::Rtp(RTPMessage::Packet(Packet::Rtcp(_))) => "rtcp",
+            RTCMessageInternal::Dtls(DTLSMessage::DataChannel(_)) => "data",
+            _ => panic!("unexpected test message"),
+        }
+    }
+
+    fn message_kinds(messages: &VecDeque<TaggedRTCMessageInternal>) -> Vec<&'static str> {
+        messages.iter().map(message_kind).collect()
+    }
+
+    #[test]
+    fn buffer_full_retries_rtp_rtcp_and_data_in_fifo_order_without_bypass() {
+        let expected = ["rtp", "rtcp", "data"];
+
+        for blocked_kind in expected {
+            let mut intermediate_wouts = tagged_messages();
+            let mut deferred_retry_wouts = VecDeque::new();
+            let mut first_stage_seen = Vec::new();
+
+            process_write_stage(&mut intermediate_wouts, &mut deferred_retry_wouts, |msg| {
+                let kind = message_kind(&msg);
+                first_stage_seen.push(kind);
+                if kind == blocked_kind {
+                    Ok(HandlerWriteResult::Retry(msg))
+                } else {
+                    Ok(HandlerWriteResult::Consumed)
+                }
+            });
+
+            let blocked_at = expected
+                .iter()
+                .position(|kind| *kind == blocked_kind)
+                .expect("blocked kind is present");
+            assert_eq!(first_stage_seen, expected[..=blocked_at]);
+            assert!(
+                intermediate_wouts.is_empty(),
+                "the blocked item and untouched suffix must not reach downstream handlers"
+            );
+            assert_eq!(message_kinds(&deferred_retry_wouts), expected[blocked_at..]);
+
+            let mut retry_seen = Vec::new();
+            process_write_stage(&mut deferred_retry_wouts, &mut VecDeque::new(), |msg| {
+                retry_seen.push(message_kind(&msg));
+                Ok(HandlerWriteResult::Consumed)
+            });
+            assert_eq!(retry_seen, expected[blocked_at..]);
+            assert!(deferred_retry_wouts.is_empty());
+        }
+    }
+
+    #[test]
+    fn non_backpressure_errors_drop_only_their_message_and_do_not_defer_following_messages() {
+        let expected = ["rtp", "rtcp", "data"];
+
+        for dropped_kind in expected {
+            let mut intermediate_wouts = tagged_messages();
+            let mut deferred_retry_wouts = VecDeque::new();
+            let mut seen = Vec::new();
+            let mut forwarded = Vec::new();
+
+            process_write_stage(&mut intermediate_wouts, &mut deferred_retry_wouts, |msg| {
+                let kind = message_kind(&msg);
+                seen.push(kind);
+                if kind == dropped_kind {
+                    Err(Error::ErrOutboundPacketTooLarge)
+                } else {
+                    forwarded.push(kind);
+                    Ok(HandlerWriteResult::Consumed)
+                }
+            });
+
+            assert_eq!(seen, expected);
+            assert_eq!(
+                forwarded,
+                expected
+                    .iter()
+                    .copied()
+                    .filter(|kind| *kind != dropped_kind)
+                    .collect::<Vec<_>>()
+            );
+            assert!(intermediate_wouts.is_empty());
+            assert!(deferred_retry_wouts.is_empty());
+        }
     }
 }
