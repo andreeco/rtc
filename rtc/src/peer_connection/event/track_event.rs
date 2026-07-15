@@ -36,10 +36,10 @@ use crate::rtp_transceiver::{RTCRtpReceiverId, RtpStreamId};
 ///                 let params = receiver.get_parameters();
 ///                 println!("Codecs: {:?}", params.codecs);
 ///             }
-///             
+///
 ///             // Print associated stream IDs
 ///             println!("Stream IDs: {:?}", init.stream_ids);
-///             
+///
 ///             // Check if this is a simulcast stream
 ///             if let Some(rid) = &init.rid {
 ///                 println!("Simulcast RID: {}", rid);
@@ -74,6 +74,12 @@ pub struct RTCTrackEventInit {
     /// first RTP packet for this stream). Use this value when sending RTCP feedback
     /// such as PLI or NACK targeted at this specific stream.
     pub ssrc: u32,
+
+    /// Negotiated SDP media identifier for this track's transceiver.
+    ///
+    /// This is populated from the authoritative RTP media-section association and remains
+    /// available to applications when transceiver state is later renegotiated.
+    pub mid: Option<String>,
 
     /// RTP Stream ID (RID) for simulcast/SVC streams.
     ///

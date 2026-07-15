@@ -381,6 +381,7 @@ where
                                     track_id: receiver.track().track_id().to_owned(),
                                     stream_ids: vec![receiver.track().stream_id().to_owned()],
                                     ssrc,
+                                    mid: Some(mid.clone()),
                                     rid: None,
                                 },
                             )),
@@ -498,6 +499,7 @@ where
                                     track_id: track_id.clone(),
                                     stream_ids: vec![receiver.track().stream_id().to_owned()],
                                     ssrc,
+                                    mid: Some(mid.clone()),
                                     rid: (!rid.is_empty()).then_some(rid),
                                 },
                             )),
@@ -582,6 +584,7 @@ where
                             track_id: track_id.clone(),
                             stream_ids: vec![receiver.track().stream_id().to_owned()],
                             ssrc: rtp_header.ssrc,
+                            mid: Some(mid.clone()),
                             rid: None,
                         })),
                     ));
