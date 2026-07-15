@@ -1,4 +1,5 @@
 use super::*;
+use crate::key_derivation::SRTCP_INDEX_SIZE;
 use shared::{error::Result, marshal::Unmarshal};
 
 use bytes::BytesMut;
@@ -6,6 +7,17 @@ use bytes::BytesMut;
 impl Context {
     /// DecryptRTCP decrypts a RTCP packet with an encrypted payload
     pub fn decrypt_rtcp(&mut self, encrypted: &[u8]) -> Result<BytesMut> {
+        // Validate the complete SRTCP envelope before reading the trailing index
+        // or the SSRC. This prevents short network packets from reaching cipher
+        // indexing operations that assume the header, index, and tag exist.
+        let minimum_len = 8
+            + SRTCP_INDEX_SIZE
+            + self.cipher.rtcp_auth_tag_len()
+            + self.cipher.aead_auth_tag_len();
+        if encrypted.len() < minimum_len {
+            return Err(Error::ErrTooShortRtcp);
+        }
+
         let mut buf = encrypted;
         rtcp::Header::unmarshal(&mut buf)?;
 

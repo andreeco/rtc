@@ -129,6 +129,34 @@ fn test_rtcp_lifecycle() -> Result<()> {
 }
 
 #[test]
+fn aead_srtcp_round_trips_for_aes_128_and_256_gcm() -> Result<()> {
+    for profile in [
+        ProtectionProfile::AeadAes128Gcm,
+        ProtectionProfile::AeadAes256Gcm,
+    ] {
+        let master_key = vec![0x5a; profile.key_len()];
+        let master_salt = [0xa5; 12];
+        let plaintext = &RTCP_TEST_CASES[0].decrypted;
+
+        let encrypted = Context::new(&master_key, &master_salt, profile, None, None)?
+            .encrypt_rtcp(plaintext)?;
+        assert_eq!(
+            encrypted.len(),
+            plaintext.len() + SRTCP_INDEX_SIZE + profile.aead_auth_tag_len(),
+            "{profile:?} must append an AEAD tag and ESRTCP word"
+        );
+        assert_eq!(
+            Context::new(&master_key, &master_salt, profile, None, None)?
+                .decrypt_rtcp(&encrypted)?,
+            *plaintext,
+            "{profile:?} round trip"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_rtcp_invalid_auth_tag() -> Result<()> {
     let auth_tag_len = ProtectionProfile::Aes128CmHmacSha1_80.rtcp_auth_tag_len();
 
@@ -251,6 +279,38 @@ fn test_encrypt_rtcp_separation() -> Result<()> {
     for (i, output) in encrypted_rctps.iter().enumerate() {
         let decrypted = decrypt_context.decrypt_rtcp(output)?;
         assert_eq!(inputs[i], decrypted);
+    }
+
+    Ok(())
+}
+
+/// Every packet shorter than the negotiated SRTCP minimum must be rejected
+/// without indexing into its missing SSRC, index, or authentication tag.
+#[test]
+fn short_srtcp_packets_error_without_panicking() -> Result<()> {
+    let cases: [(ProtectionProfile, &[u8]); 2] = [
+        (
+            ProtectionProfile::Aes128CmHmacSha1_80,
+            &RTCP_TEST_MASTER_SALT[..],
+        ),
+        (
+            ProtectionProfile::AeadAes128Gcm,
+            &RTCP_TEST_MASTER_SALT[..12],
+        ),
+    ];
+
+    for (profile, salt) in cases {
+        let mut context = Context::new(&RTCP_TEST_MASTER_KEY, salt, profile, None, None)?;
+        let minimum_len =
+            8 + SRTCP_INDEX_SIZE + profile.rtcp_auth_tag_len() + profile.aead_auth_tag_len();
+
+        for len in 0..minimum_len {
+            let packet = RTCP_TEST_CASES[0].encrypted.slice(0..len);
+            assert!(
+                context.decrypt_rtcp(&packet).is_err(),
+                "{profile:?} must reject a {len}-byte SRTCP packet"
+            );
+        }
     }
 
     Ok(())
