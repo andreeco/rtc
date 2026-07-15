@@ -196,7 +196,10 @@ impl RTCIceCandidate {
 
         Ok(RTCIceCandidateInit {
             candidate: format!("candidate:{}", candidate.marshal()),
-            sdp_mid: Some("".to_owned()),
+            // Candidates gathered by the unified ICE transport apply to the
+            // bundle's first media section. An empty MID is not a valid
+            // association for browser `addIceCandidate` implementations.
+            sdp_mid: Some("0".to_owned()),
             sdp_mline_index: Some(0u16),
             username_fragment: None,
             url: None,
@@ -243,6 +246,31 @@ pub struct RTCIceCandidateInit {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn locally_gathered_candidate_uses_first_bundle_mid() {
+        let candidate = CandidateHostConfig {
+            base_config: CandidateConfig {
+                candidate_id: "local-host".to_string(),
+                network: "udp".to_string(),
+                address: "127.0.0.1".to_string(),
+                port: 5000,
+                component: 1,
+                foundation: "1".to_string(),
+                priority: 2_130_706_431,
+            },
+            tcp_type: TcpType::Unspecified,
+        }
+        .new_candidate_host()
+        .expect("host candidate should construct");
+
+        let candidate_init = RTCIceCandidate::from(&candidate)
+            .to_json()
+            .expect("local candidate should serialize");
+
+        assert_eq!(candidate_init.sdp_mid.as_deref(), Some("0"));
+        assert_eq!(candidate_init.sdp_mline_index, Some(0));
+    }
 
     #[test]
     fn test_ice_candidate_serialization() {
