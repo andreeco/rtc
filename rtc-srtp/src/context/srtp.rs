@@ -71,8 +71,32 @@ impl Context {
         Ok(dst)
     }
 
-    /// EncryptRTP marshals and encrypts an RTP packet, writing to the dst buffer provided.
-    /// If the dst buffer does not have the capacity to hold `len(plaintext) + 10` bytes, a new one will be allocated and returned.
+    /// Encrypt an already-marshaled RTP packet while retaining its buffer when the cipher supports it.
+    pub fn encrypt_rtp_buffer_with_header(
+        &mut self,
+        plaintext: BytesMut,
+        header: &rtp::Header,
+    ) -> Result<BytesMut> {
+        let (roc, diff, ovf) = self
+            .get_srtp_ssrc_state(header.ssrc)
+            .next_rollover_count(header.sequence_number);
+        if ovf {
+            // ... when 2^48 SRTP packets or 2^31 SRTCP packets have been secured with the same key
+            // (whichever occurs before), the key management MUST be called to provide new master key(s)
+            // (previously stored and used keys MUST NOT be used again), or the session MUST be terminated.
+            // https://www.rfc-editor.org/rfc/rfc3711#section-9.2
+            return Err(Error::ErrExceededMaxPackets);
+        }
+
+        let dst = self.cipher.encrypt_rtp_buffer(plaintext, header, roc)?;
+
+        self.get_srtp_ssrc_state(header.ssrc)
+            .update_rollover_count(header.sequence_number, diff);
+
+        Ok(dst)
+    }
+
+    /// Encrypt RTP bytes after parsing their header.
     pub fn encrypt_rtp(&mut self, plaintext: &[u8]) -> Result<BytesMut> {
         let mut buf = plaintext;
         let header = rtp::Header::unmarshal(&mut buf)?;

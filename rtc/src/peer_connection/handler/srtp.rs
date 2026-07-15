@@ -125,7 +125,7 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
                 RTPMessage::Packet(Packet::Rtp(rtp_message)) => {
                     if let Some(context) = self.ctx.local_srtp_context.as_mut() {
                         let packet = rtp_message.marshal()?;
-                        context.encrypt_rtp(&packet)?
+                        context.encrypt_rtp_buffer_with_header(packet, &rtp_message.header)?
                     } else {
                         return Err(Error::Other(format!(
                             "local_srtp_context is not set yet for rtp_packet {:?}",

@@ -1,7 +1,7 @@
 use super::*;
 use shared::marshal::*;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use lazy_static::lazy_static;
 
 struct RTPTestCase {
@@ -75,6 +75,16 @@ fn build_test_context() -> Result<Context> {
     )
 }
 
+fn build_aead_test_context() -> Result<Context> {
+    Context::new(
+        &[0; 16],
+        &[0; 12],
+        ProtectionProfile::AeadAes128Gcm,
+        None,
+        None,
+    )
+}
+
 #[test]
 fn test_rtp_invalid_auth() -> Result<()> {
     let master_key = Bytes::from_static(&[
@@ -114,6 +124,37 @@ fn test_rtp_invalid_auth() -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+#[test]
+fn encrypt_aead_rtp_reuses_the_marshaled_buffer() -> Result<()> {
+    let packet = rtp::Packet {
+        header: rtp::Header {
+            sequence_number: 42,
+            ssrc: 0x12345678,
+            ..Default::default()
+        },
+        payload: Bytes::from_static(b"aead payload"),
+    };
+    let marshaled = packet.marshal()?;
+    let mut plaintext = BytesMut::with_capacity(
+        marshaled.len() + ProtectionProfile::AeadAes128Gcm.aead_auth_tag_len(),
+    );
+    plaintext.extend_from_slice(&marshaled);
+    let plaintext_ptr = plaintext.as_ptr();
+    let expected =
+        build_aead_test_context()?.encrypt_rtp_with_header(&marshaled, &packet.header)?;
+
+    let encrypted =
+        build_aead_test_context()?.encrypt_rtp_buffer_with_header(plaintext, &packet.header)?;
+
+    assert_eq!(encrypted.as_ptr(), plaintext_ptr);
+    assert_eq!(encrypted, expected);
+    assert_eq!(
+        build_aead_test_context()?.decrypt_rtp(&encrypted)?,
+        marshaled,
+    );
     Ok(())
 }
 

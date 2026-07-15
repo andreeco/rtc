@@ -75,6 +75,27 @@ where
         Ok(writer)
     }
 
+    fn encrypt_rtp_buffer(
+        &mut self,
+        mut payload: BytesMut,
+        header: &rtp::Header,
+        roc: u32,
+    ) -> Result<BytesMut> {
+        payload.reserve(self.aead_auth_tag_len());
+
+        let nonce = self.rtp_initialization_vector(header, roc);
+        let header_len = header.marshal_size();
+        let (aad, plaintext) = payload.split_at_mut(header_len);
+        let tag = self.srtp_cipher.encrypt_in_place_detached(
+            Nonce::from_slice(&nonce),
+            aad,
+            plaintext,
+        )?;
+
+        payload.extend_from_slice(&tag);
+        Ok(payload)
+    }
+
     fn decrypt_rtp(
         &mut self,
         ciphertext: &[u8],

@@ -48,6 +48,20 @@ pub(crate) trait Cipher: Send + Sync {
     /// Encrypt RTP payload.
     fn encrypt_rtp(&mut self, payload: &[u8], header: &rtp::Header, roc: u32) -> Result<BytesMut>;
 
+    /// Encrypt an owned RTP buffer.
+    ///
+    /// Implementations that can safely encrypt in place override this to retain
+    /// the caller's allocation. Other cipher modes retain the slice API's
+    /// existing copy behavior.
+    fn encrypt_rtp_buffer(
+        &mut self,
+        payload: BytesMut,
+        header: &rtp::Header,
+        roc: u32,
+    ) -> Result<BytesMut> {
+        self.encrypt_rtp(&payload, header, roc)
+    }
+
     /// Decrypt RTP payload.
     fn decrypt_rtp(&mut self, payload: &[u8], header: &rtp::Header, roc: u32) -> Result<BytesMut>;
 
