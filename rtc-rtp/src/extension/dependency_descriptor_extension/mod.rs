@@ -26,9 +26,12 @@ pub struct DependencyDescriptorPacketMetadata {
     pub layer_ids: DependencyDescriptorLayerIds,
     pub first_packet_in_frame: bool,
     pub last_packet_in_frame: bool,
+    /// True when an active decode target marks this frame as a switching point.
+    pub has_switching_decode_target: bool,
 }
 
 const DTI_NOT_PRESENT: u8 = 0;
+const DTI_SWITCH: u8 = 2;
 
 #[derive(Debug, Clone)]
 struct FrameTemplate {
@@ -151,9 +154,9 @@ fn parse_packet_metadata_internal(
         return None;
     }
 
-    if let Some(mask) = active_decode_targets_mask
-        && !has_any_active_decode_target(&decode_target_indications, mask)
-    {
+    let active_decode_targets_mask = active_decode_targets_mask
+        .unwrap_or_else(|| all_decode_targets_active_mask(structure_ref.num_decode_targets));
+    if !has_any_active_decode_target(&decode_target_indications, active_decode_targets_mask) {
         return None;
     }
 
@@ -161,6 +164,10 @@ fn parse_packet_metadata_internal(
         layer_ids,
         first_packet_in_frame,
         last_packet_in_frame,
+        has_switching_decode_target: has_switching_decode_target(
+            &decode_target_indications,
+            active_decode_targets_mask,
+        ),
     })
 }
 
@@ -294,6 +301,13 @@ fn has_any_active_decode_target(decode_target_indications: &[u8], active_mask: u
         .iter()
         .enumerate()
         .any(|(index, dti)| (active_mask & (1u32 << index)) != 0 && *dti != DTI_NOT_PRESENT)
+}
+
+fn has_switching_decode_target(decode_target_indications: &[u8], active_mask: u32) -> bool {
+    decode_target_indications
+        .iter()
+        .enumerate()
+        .any(|(index, dti)| (active_mask & (1u32 << index)) != 0 && *dti == DTI_SWITCH)
 }
 
 fn bit_width(mut n: u32) -> u32 {

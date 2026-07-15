@@ -148,6 +148,7 @@ fn dependency_descriptor_parser_reports_verified_frame_start_metadata() {
             },
             first_packet_in_frame: true,
             last_packet_in_frame: true,
+            has_switching_decode_target: false,
         })
     );
 }
@@ -169,7 +170,32 @@ fn dependency_descriptor_parser_preserves_non_first_frame_boundary_metadata() {
             },
             first_packet_in_frame: false,
             last_packet_in_frame: true,
+            has_switching_decode_target: false,
         })
+    );
+}
+
+#[test]
+fn dependency_descriptor_parser_reports_active_switch_decode_target() {
+    let mut parser = DependencyDescriptorParser::default();
+    let with_structure = build_dd_payload(0, 1, true, &[3]);
+    assert!(parser.parse_packet_metadata(&with_structure).is_some());
+    let switch = build_dd_payload_with_options(
+        0,
+        2,
+        false,
+        &[],
+        DdPayloadOptions {
+            active_decode_targets_mask: Some(1),
+            custom_dti: Some(2),
+        },
+    );
+    assert!(
+        parser
+            .parse_packet_metadata(&switch)
+            .is_some_and(
+                |metadata| metadata.first_packet_in_frame && metadata.has_switching_decode_target
+            )
     );
 }
 
