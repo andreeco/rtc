@@ -355,6 +355,10 @@ where
         ssrc: SSRC,
         rtp_header: Option<&rtp::Header>,
     ) -> Option<MediaStreamTrackId> {
+        let rtp_mid = rtp_header
+            .and_then(|header| self.get_rtp_header_extension_ids(header))
+            .map(|(mid, _, _)| mid)
+            .filter(|mid| !mid.is_empty());
         if let Some((id, transceiver)) =
             self.rtp_transceivers
                 .iter_mut()
@@ -436,6 +440,9 @@ where
                                     track_id: receiver.track().track_id().to_owned(),
                                     stream_ids: vec![receiver.track().stream_id().to_owned()],
                                     ssrc,
+                                    mid: rtp_mid
+                                        .clone()
+                                        .or_else(|| (!mid.is_empty()).then_some(mid.clone())),
                                     rid: None,
                                 },
                             )),
@@ -572,6 +579,7 @@ where
                                     track_id: track_id.clone(),
                                     stream_ids: vec![receiver.track().stream_id().to_owned()],
                                     ssrc,
+                                    mid: (!mid.is_empty()).then_some(mid.clone()),
                                     rid: (!rid.is_empty()).then_some(rid),
                                 },
                             )),
@@ -656,6 +664,7 @@ where
                             track_id: track_id.clone(),
                             stream_ids: vec![receiver.track().stream_id().to_owned()],
                             ssrc: rtp_header.ssrc,
+                            mid: None,
                             rid: None,
                         })),
                     ));
