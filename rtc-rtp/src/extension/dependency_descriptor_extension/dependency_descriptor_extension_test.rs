@@ -211,6 +211,77 @@ fn build_multi_target_descriptor(
 }
 
 #[test]
+fn replace_or_inject_active_decode_target_mask_replaces_existing_mask() {
+    let payload = build_multi_target_descriptor(
+        1,
+        2,
+        false,
+        Some(0b110),
+        Some([0, 2, 3]),
+        Some(&[1, 300]),
+        Some([11, 0]),
+    );
+
+    let rewritten = replace_or_inject_active_decode_target_mask(&payload, 3, 0b011)
+        .expect("existing active decode target mask should be replaced");
+
+    assert_eq!(
+        rewritten,
+        build_multi_target_descriptor(
+            1,
+            2,
+            false,
+            Some(0b011),
+            Some([0, 2, 3]),
+            Some(&[1, 300]),
+            Some([11, 0]),
+        )
+    );
+}
+
+#[test]
+fn replace_or_inject_active_decode_target_mask_injects_before_custom_fields() {
+    let payload = build_multi_target_descriptor(
+        1,
+        2,
+        true,
+        None,
+        Some([0, 2, 3]),
+        Some(&[1, 300]),
+        Some([11, 0]),
+    );
+
+    let rewritten = replace_or_inject_active_decode_target_mask(&payload, 3, 0b011)
+        .expect("active decode target mask should be injected");
+
+    assert_eq!(
+        rewritten,
+        build_multi_target_descriptor(
+            1,
+            2,
+            true,
+            Some(0b011),
+            Some([0, 2, 3]),
+            Some(&[1, 300]),
+            Some([11, 0]),
+        )
+    );
+}
+
+#[test]
+fn replace_or_inject_active_decode_target_mask_appends_extended_fields() {
+    let payload = build_multi_target_descriptor(1, 2, false, None, None, None, None);
+
+    let rewritten = replace_or_inject_active_decode_target_mask(&payload, 3, 0b011)
+        .expect("active decode target mask should be appended");
+
+    assert_eq!(
+        rewritten,
+        build_multi_target_descriptor(1, 2, false, Some(0b011), None, None, None)
+    );
+}
+
+#[test]
 fn dependency_descriptor_parser_retains_multi_target_selector_state_and_overrides() {
     let mut parser = DependencyDescriptorParser::default();
 

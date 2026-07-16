@@ -124,6 +124,147 @@ impl DependencyDescriptorParser {
     }
 }
 
+/// Replaces or injects the active decode-target mask in a raw dependency-descriptor payload.
+///
+/// `num_decode_targets` must match the descriptor's dependency structure when it carries one.
+/// The replacement mask may set only those decode-target bits. Returns `None` for malformed
+/// payloads or invalid mask parameters.
+pub fn replace_or_inject_active_decode_target_mask(
+    payload: &[u8],
+    num_decode_targets: u8,
+    replacement_mask: u32,
+) -> Option<Vec<u8>> {
+    if !(1..=32).contains(&num_decode_targets)
+        || replacement_mask & !all_decode_targets_active_mask(num_decode_targets) != 0
+    {
+        return None;
+    }
+
+    const MANDATORY_FIELDS_BITS: usize = 24;
+    const ACTIVE_DECODE_TARGETS_PRESENT_BIT: usize = MANDATORY_FIELDS_BITS + 1;
+
+    let mut bits = payload_to_bits(payload);
+    if bits.len() < MANDATORY_FIELDS_BITS {
+        return None;
+    }
+
+    if bits.len() == MANDATORY_FIELDS_BITS {
+        bits.extend([false, true, false, false, false]);
+        append_mask_bits(&mut bits, replacement_mask, num_decode_targets);
+        pad_to_full_byte(&mut bits);
+        return Some(bits_to_payload(&bits));
+    }
+
+    let mut reader = BitReader::new(payload);
+    reader.skip_bits(MANDATORY_FIELDS_BITS)?;
+    let template_structure_present = reader.read_bool()?;
+    let active_decode_targets_present = reader.read_bool()?;
+    let custom_dtis = reader.read_bool()?;
+    let custom_fdiffs = reader.read_bool()?;
+    let custom_chains = reader.read_bool()?;
+
+    let structure = if template_structure_present {
+        let structure = parse_structure(&mut reader)?;
+        if structure.num_decode_targets != num_decode_targets {
+            return None;
+        }
+        Some(structure)
+    } else {
+        None
+    };
+
+    let mask_offset = reader.bit_offset;
+    let mask_end = mask_offset.checked_add(usize::from(num_decode_targets))?;
+    if active_decode_targets_present {
+        if mask_end > bits.len() {
+            return None;
+        }
+        write_mask_bits(
+            &mut bits[mask_offset..mask_end],
+            replacement_mask,
+            num_decode_targets,
+        );
+    } else {
+        let payload_end = dependency_descriptor_payload_end(
+            payload,
+            mask_offset,
+            num_decode_targets,
+            structure.as_ref().map(|structure| structure.num_chains),
+            custom_dtis,
+            custom_fdiffs,
+            custom_chains,
+        );
+        if let Some(payload_end) = payload_end {
+            bits.truncate(payload_end);
+        }
+        bits[ACTIVE_DECODE_TARGETS_PRESENT_BIT] = true;
+        let mut replacement_bits = Vec::with_capacity(usize::from(num_decode_targets));
+        append_mask_bits(&mut replacement_bits, replacement_mask, num_decode_targets);
+        bits.splice(mask_offset..mask_offset, replacement_bits);
+        pad_to_full_byte(&mut bits);
+    }
+
+    Some(bits_to_payload(&bits))
+}
+
+fn dependency_descriptor_payload_end(
+    payload: &[u8],
+    mask_offset: usize,
+    num_decode_targets: u8,
+    num_chains: Option<u8>,
+    custom_dtis: bool,
+    custom_fdiffs: bool,
+    custom_chains: bool,
+) -> Option<usize> {
+    let mut reader = BitReader {
+        payload,
+        bit_offset: mask_offset,
+    };
+    if custom_dtis {
+        reader.skip_bits(usize::from(num_decode_targets) * 2)?;
+    }
+    if custom_fdiffs {
+        parse_custom_frame_diffs(&mut reader)?;
+    }
+    if custom_chains {
+        reader.skip_bits(usize::from(num_chains?) * 8)?;
+    }
+    Some(reader.bit_offset)
+}
+
+fn payload_to_bits(payload: &[u8]) -> Vec<bool> {
+    payload
+        .iter()
+        .flat_map(|byte| (0..8).rev().map(move |shift| (byte >> shift) & 1 != 0))
+        .collect()
+}
+
+fn bits_to_payload(bits: &[bool]) -> Vec<u8> {
+    let mut payload = vec![0; bits.len().div_ceil(8)];
+    for (index, bit) in bits.iter().enumerate() {
+        if *bit {
+            payload[index / 8] |= 1 << (7 - (index % 8));
+        }
+    }
+    payload
+}
+
+fn append_mask_bits(bits: &mut Vec<bool>, mask: u32, num_decode_targets: u8) {
+    for shift in (0..num_decode_targets).rev() {
+        bits.push((mask >> shift) & 1 != 0);
+    }
+}
+
+fn write_mask_bits(bits: &mut [bool], mask: u32, num_decode_targets: u8) {
+    for (bit, shift) in bits.iter_mut().zip((0..num_decode_targets).rev()) {
+        *bit = (mask >> shift) & 1 != 0;
+    }
+}
+
+fn pad_to_full_byte(bits: &mut Vec<bool>) {
+    bits.resize(bits.len().next_multiple_of(8), false);
+}
+
 fn parse_packet_metadata_internal(
     payload: &[u8],
     structure: &mut Option<FrameDependencyStructure>,
