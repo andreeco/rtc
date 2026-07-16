@@ -118,6 +118,161 @@ fn build_dd_payload(
     )
 }
 
+fn build_multi_target_descriptor(
+    template_id: u8,
+    frame_number: u16,
+    include_structure: bool,
+    active_decode_targets_mask: Option<u8>,
+    custom_dtis: Option<[u8; 3]>,
+    custom_frame_diffs: Option<&[u16]>,
+    custom_chain_diffs: Option<[u8; 2]>,
+) -> Vec<u8> {
+    let mut w = BitWriter::default();
+    w.push_bool(true);
+    w.push_bool(true);
+    w.push(u64::from(template_id), 6);
+    w.push(u64::from(frame_number), 16);
+
+    let has_extended_fields = include_structure
+        || active_decode_targets_mask.is_some()
+        || custom_dtis.is_some()
+        || custom_frame_diffs.is_some()
+        || custom_chain_diffs.is_some();
+    if !has_extended_fields {
+        return w.into_bytes();
+    }
+
+    w.push_bool(include_structure);
+    w.push_bool(active_decode_targets_mask.is_some());
+    w.push_bool(custom_dtis.is_some());
+    w.push_bool(custom_frame_diffs.is_some());
+    w.push_bool(custom_chain_diffs.is_some());
+
+    if include_structure {
+        w.push(0, 6); // structure id
+        w.push(2, 5); // three decode targets
+        w.push(1, 2); // template 0 -> next temporal layer
+        w.push(3, 2); // template 1 -> no more templates
+
+        // Template DTIs: [R, -, S], then [D, R, R].
+        for dti in [3, 0, 2, 1, 3, 3] {
+            w.push(dti, 2);
+        }
+
+        // Template frame diffs: [1, 4], then [2].
+        for diff in [1, 4] {
+            w.push_bool(true);
+            w.push(diff - 1, 4);
+        }
+        w.push_bool(false);
+        w.push_bool(true);
+        w.push(1, 4);
+        w.push_bool(false);
+
+        w.push(2, 2); // two chains, encoded non-symmetrically in [0, 4).
+        for protected_by_chain in [0, 1, 0] {
+            w.push(protected_by_chain, 1);
+        }
+        for chain_diff in [3, 5, 7, 9] {
+            w.push(chain_diff, 4);
+        }
+        w.push_bool(false); // no resolutions
+    }
+
+    if let Some(mask) = active_decode_targets_mask {
+        w.push(u64::from(mask), 3);
+    }
+    if let Some(dtis) = custom_dtis {
+        for dti in dtis {
+            w.push(u64::from(dti), 2);
+        }
+    }
+    if let Some(frame_diffs) = custom_frame_diffs {
+        for &frame_diff in frame_diffs {
+            let (size, width) = if frame_diff <= 16 {
+                (1, 4)
+            } else if frame_diff <= 256 {
+                (2, 8)
+            } else {
+                (3, 12)
+            };
+            w.push(size, 2);
+            w.push(u64::from(frame_diff - 1), width);
+        }
+        w.push(0, 2);
+    }
+    if let Some(chain_diffs) = custom_chain_diffs {
+        for chain_diff in chain_diffs {
+            w.push(u64::from(chain_diff), 8);
+        }
+    }
+
+    w.into_bytes()
+}
+
+#[test]
+fn dependency_descriptor_parser_retains_multi_target_selector_state_and_overrides() {
+    let mut parser = DependencyDescriptorParser::default();
+
+    let template_packet = build_multi_target_descriptor(1, 1, true, None, None, None, None);
+    let template_metadata = parser
+        .parse_packet_metadata(&template_packet)
+        .expect("template descriptor should parse");
+    assert_eq!(template_metadata.active_decode_targets_mask, 0b111);
+    assert_eq!(
+        template_metadata.decode_target_layers,
+        vec![
+            DependencyDescriptorLayerIds {
+                temporal_id: 1,
+                spatial_id: 0,
+            },
+            DependencyDescriptorLayerIds {
+                temporal_id: 1,
+                spatial_id: 0,
+            },
+            DependencyDescriptorLayerIds {
+                temporal_id: 1,
+                spatial_id: 0,
+            },
+        ]
+    );
+    assert_eq!(template_metadata.frame_diffs, vec![2]);
+    assert_eq!(template_metadata.chain_diffs, vec![7, 9]);
+    assert_eq!(
+        template_metadata.decode_target_protected_by_chain,
+        vec![0, 1, 0]
+    );
+
+    let override_packet = build_multi_target_descriptor(
+        1,
+        2,
+        false,
+        Some(0b110),
+        Some([0, 2, 3]),
+        Some(&[1, 300]),
+        Some([11, 0]),
+    );
+    let override_metadata = parser
+        .parse_packet_metadata(&override_packet)
+        .expect("custom descriptor should parse");
+    assert_eq!(override_metadata.active_decode_targets_mask, 0b110);
+    assert_eq!(
+        override_metadata.decode_target_indications,
+        vec![
+            DependencyDescriptorDecodeTargetIndication::NotPresent,
+            DependencyDescriptorDecodeTargetIndication::Switch,
+            DependencyDescriptorDecodeTargetIndication::Required,
+        ]
+    );
+    assert!(override_metadata.has_switching_decode_target);
+    assert_eq!(override_metadata.frame_diffs, vec![1, 300]);
+    assert_eq!(override_metadata.chain_diffs, vec![11, 0]);
+    assert_eq!(
+        override_metadata.decode_target_protected_by_chain,
+        vec![0, 1, 0]
+    );
+}
+
 #[test]
 fn dependency_descriptor_parser_reads_template_temporal_layer() {
     let mut parser = DependencyDescriptorParser::default();
@@ -151,6 +306,13 @@ fn dependency_descriptor_parser_reports_verified_frame_start_metadata() {
             last_packet_in_frame: true,
             active_decode_targets_mask: 1,
             decode_target_indications: vec![DependencyDescriptorDecodeTargetIndication::Required],
+            decode_target_layers: vec![DependencyDescriptorLayerIds {
+                temporal_id: 1,
+                spatial_id: 0,
+            }],
+            frame_diffs: vec![],
+            chain_diffs: vec![],
+            decode_target_protected_by_chain: vec![],
             has_switching_decode_target: false,
         })
     );
@@ -176,6 +338,13 @@ fn dependency_descriptor_parser_preserves_non_first_frame_boundary_metadata() {
             last_packet_in_frame: true,
             active_decode_targets_mask: 1,
             decode_target_indications: vec![DependencyDescriptorDecodeTargetIndication::Required],
+            decode_target_layers: vec![DependencyDescriptorLayerIds {
+                temporal_id: 0,
+                spatial_id: 0,
+            }],
+            frame_diffs: vec![],
+            chain_diffs: vec![],
+            decode_target_protected_by_chain: vec![],
             has_switching_decode_target: false,
         })
     );

@@ -52,6 +52,14 @@ pub struct DependencyDescriptorPacketMetadata {
     pub active_decode_targets_mask: u32,
     /// One indication per decode-target index for this frame.
     pub decode_target_indications: Vec<DependencyDescriptorDecodeTargetIndication>,
+    /// Maximum temporal/spatial layer for each decode-target index in the active structure.
+    pub decode_target_layers: Vec<DependencyDescriptorLayerIds>,
+    /// Frame-number differences to frames this frame depends on, from the template or custom data.
+    pub frame_diffs: Vec<u16>,
+    /// Per-chain frame-number differences, from the template or custom data.
+    pub chain_diffs: Vec<u8>,
+    /// Maps each decode-target index to the chain that protects it. Empty when no chains exist.
+    pub decode_target_protected_by_chain: Vec<u8>,
     /// True when an active decode target marks this frame as a switching point.
     pub has_switching_decode_target: bool,
 }
@@ -63,6 +71,8 @@ const DTI_SWITCH: u8 = 2;
 struct FrameTemplate {
     layer_ids: DependencyDescriptorLayerIds,
     decode_target_indications: Vec<u8>,
+    frame_diffs: Vec<u16>,
+    chain_diffs: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -70,6 +80,8 @@ struct FrameDependencyStructure {
     structure_id: u8,
     num_decode_targets: u8,
     num_chains: u8,
+    decode_target_protected_by_chain: Vec<u8>,
+    decode_target_layers: Vec<DependencyDescriptorLayerIds>,
     templates: Vec<FrameTemplate>,
 }
 
@@ -170,19 +182,21 @@ fn parse_packet_metadata_internal(
         template.decode_target_indications.clone()
     };
 
-    if custom_fdiffs {
-        loop {
-            let next_fdiff_size = reader.read_bits(2)?;
-            if next_fdiff_size == 0 {
-                break;
-            }
-            reader.skip_bits(next_fdiff_size as usize * 4)?;
-        }
-    }
+    let frame_diffs = if custom_fdiffs {
+        parse_custom_frame_diffs(&mut reader)?
+    } else {
+        template.frame_diffs.clone()
+    };
 
-    if custom_chains {
-        reader.skip_bits(usize::from(structure_ref.num_chains) * 8)?;
-    }
+    let chain_diffs = if custom_chains {
+        let mut chain_diffs = Vec::with_capacity(usize::from(structure_ref.num_chains));
+        for _ in 0..structure_ref.num_chains {
+            chain_diffs.push(reader.read_bits_u8(8)?);
+        }
+        chain_diffs
+    } else {
+        template.chain_diffs.clone()
+    };
 
     if layer_ids.temporal_id > MAX_TEMPORAL_ID || layer_ids.spatial_id > MAX_SPATIAL_ID {
         return None;
@@ -209,6 +223,10 @@ fn parse_packet_metadata_internal(
         last_packet_in_frame,
         active_decode_targets_mask,
         decode_target_indications,
+        decode_target_layers: structure_ref.decode_target_layers.clone(),
+        frame_diffs,
+        chain_diffs,
+        decode_target_protected_by_chain: structure_ref.decode_target_protected_by_chain.clone(),
         has_switching_decode_target,
     })
 }
@@ -262,28 +280,60 @@ fn parse_structure(reader: &mut BitReader<'_>) -> Option<FrameDependencyStructur
         templates.push(FrameTemplate {
             layer_ids,
             decode_target_indications,
+            frame_diffs: Vec::new(),
+            chain_diffs: Vec::new(),
         });
     }
 
     // template fdiffs: each template has repeated [follow_bit, 4-bit diff] entries until follow=false
-    for _ in 0..templates.len() {
+    for template in &mut templates {
         loop {
             let follow = reader.read_bool()?;
             if !follow {
                 break;
             }
-            reader.skip_bits(4)?;
+            template
+                .frame_diffs
+                .push(u16::from(reader.read_bits_u8(4)?) + 1);
         }
     }
 
     // template chains
     let num_chains = read_non_symmetric(reader, u32::from(num_decode_targets) + 1)? as u8;
+    let mut decode_target_protected_by_chain = Vec::new();
     if num_chains > 0 {
+        decode_target_protected_by_chain.reserve(usize::from(num_decode_targets));
         for _ in 0..num_decode_targets {
-            read_non_symmetric(reader, u32::from(num_chains))?;
+            decode_target_protected_by_chain
+                .push(u8::try_from(read_non_symmetric(reader, u32::from(num_chains))?).ok()?);
         }
-        reader.skip_bits(templates.len() * usize::from(num_chains) * 4)?;
+        for template in &mut templates {
+            template.chain_diffs.reserve(usize::from(num_chains));
+            for _ in 0..num_chains {
+                template.chain_diffs.push(reader.read_bits_u8(4)?);
+            }
+        }
     }
+
+    let decode_target_layers = (0..num_decode_targets)
+        .map(|target| {
+            templates
+                .iter()
+                .filter(|template| {
+                    template.decode_target_indications[usize::from(target)] != DTI_NOT_PRESENT
+                })
+                .fold(
+                    DependencyDescriptorLayerIds {
+                        temporal_id: 0,
+                        spatial_id: 0,
+                    },
+                    |layer, template| DependencyDescriptorLayerIds {
+                        temporal_id: layer.temporal_id.max(template.layer_ids.temporal_id),
+                        spatial_id: layer.spatial_id.max(template.layer_ids.spatial_id),
+                    },
+                )
+        })
+        .collect();
 
     // optional resolutions
     if reader.read_bool()? {
@@ -302,8 +352,22 @@ fn parse_structure(reader: &mut BitReader<'_>) -> Option<FrameDependencyStructur
         structure_id,
         num_decode_targets,
         num_chains,
+        decode_target_protected_by_chain,
+        decode_target_layers,
         templates,
     })
+}
+
+fn parse_custom_frame_diffs(reader: &mut BitReader<'_>) -> Option<Vec<u16>> {
+    let mut frame_diffs = Vec::new();
+    loop {
+        let next_fdiff_size = reader.read_bits(2)? as usize;
+        if next_fdiff_size == 0 {
+            return Some(frame_diffs);
+        }
+        let frame_diff_minus_one = reader.read_bits(next_fdiff_size * 4)?;
+        frame_diffs.push(u16::try_from(frame_diff_minus_one.checked_add(1)?).ok()?);
+    }
 }
 
 fn read_non_symmetric(reader: &mut BitReader<'_>, num_values: u32) -> Option<u32> {
