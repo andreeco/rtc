@@ -142,12 +142,15 @@ fn dependency_descriptor_parser_reports_verified_frame_start_metadata() {
     assert_eq!(
         parser.parse_packet_metadata(&payload),
         Some(DependencyDescriptorPacketMetadata {
+            frame_number: 1,
             layer_ids: DependencyDescriptorLayerIds {
                 temporal_id: 1,
                 spatial_id: 0,
             },
             first_packet_in_frame: true,
             last_packet_in_frame: true,
+            active_decode_targets_mask: 1,
+            decode_target_indications: vec![DependencyDescriptorDecodeTargetIndication::Required],
             has_switching_decode_target: false,
         })
     );
@@ -164,12 +167,15 @@ fn dependency_descriptor_parser_preserves_non_first_frame_boundary_metadata() {
     assert_eq!(
         parser.parse_packet_metadata(&follow_up),
         Some(DependencyDescriptorPacketMetadata {
+            frame_number: 2,
             layer_ids: DependencyDescriptorLayerIds {
                 temporal_id: 0,
                 spatial_id: 0,
             },
             first_packet_in_frame: false,
             last_packet_in_frame: true,
+            active_decode_targets_mask: 1,
+            decode_target_indications: vec![DependencyDescriptorDecodeTargetIndication::Required],
             has_switching_decode_target: false,
         })
     );

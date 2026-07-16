@@ -16,16 +16,42 @@ pub struct DependencyDescriptorLayerIds {
     pub spatial_id: u8,
 }
 
+/// A frame's dependency-target indication for one decode target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DependencyDescriptorDecodeTargetIndication {
+    NotPresent,
+    Discardable,
+    Switch,
+    Required,
+}
+
+impl DependencyDescriptorDecodeTargetIndication {
+    fn from_wire(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::NotPresent),
+            1 => Some(Self::Discardable),
+            2 => Some(Self::Switch),
+            3 => Some(Self::Required),
+            _ => None,
+        }
+    }
+}
+
 /// Verified dependency-descriptor metadata for one RTP packet.
 ///
 /// A value is returned only when the descriptor resolves to an active decode target. Callers can
 /// use `first_packet_in_frame` as a descriptor-backed frame boundary; it is not a claim that the
 /// frame is an intra/key frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependencyDescriptorPacketMetadata {
+    pub frame_number: u16,
     pub layer_ids: DependencyDescriptorLayerIds,
     pub first_packet_in_frame: bool,
     pub last_packet_in_frame: bool,
+    /// Effective target activity after this packet, retained until a later descriptor updates it.
+    pub active_decode_targets_mask: u32,
+    /// One indication per decode-target index for this frame.
+    pub decode_target_indications: Vec<DependencyDescriptorDecodeTargetIndication>,
     /// True when an active decode target marks this frame as a switching point.
     pub has_switching_decode_target: bool,
 }
@@ -54,6 +80,7 @@ struct FrameDependencyStructure {
 #[derive(Debug, Default, Clone)]
 pub struct DependencyDescriptorParser {
     structure: Option<FrameDependencyStructure>,
+    active_decode_targets_mask: Option<u32>,
 }
 
 impl DependencyDescriptorParser {
@@ -73,8 +100,14 @@ impl DependencyDescriptorParser {
         payload: &[u8],
     ) -> Option<DependencyDescriptorPacketMetadata> {
         let mut candidate_structure = self.structure.clone();
-        let metadata = parse_packet_metadata_internal(payload, &mut candidate_structure)?;
+        let mut candidate_active_mask = self.active_decode_targets_mask;
+        let metadata = parse_packet_metadata_internal(
+            payload,
+            &mut candidate_structure,
+            &mut candidate_active_mask,
+        )?;
         self.structure = candidate_structure;
+        self.active_decode_targets_mask = candidate_active_mask;
         Some(metadata)
     }
 }
@@ -82,6 +115,7 @@ impl DependencyDescriptorParser {
 fn parse_packet_metadata_internal(
     payload: &[u8],
     structure: &mut Option<FrameDependencyStructure>,
+    active_decode_targets_mask_state: &mut Option<u32>,
 ) -> Option<DependencyDescriptorPacketMetadata> {
     let mut reader = BitReader::new(payload);
 
@@ -89,7 +123,7 @@ fn parse_packet_metadata_internal(
     let first_packet_in_frame = reader.read_bool()?;
     let last_packet_in_frame = reader.read_bool()?;
     let frame_dependency_template_id = reader.read_bits_u8(6)?;
-    let _frame_number = reader.read_bits(16)?;
+    let frame_number = u16::try_from(reader.read_bits(16)?).ok()?;
 
     let mut active_decode_targets_present = false;
     let mut custom_dtis = false;
@@ -155,19 +189,27 @@ fn parse_packet_metadata_internal(
     }
 
     let active_decode_targets_mask = active_decode_targets_mask
+        .or(*active_decode_targets_mask_state)
         .unwrap_or_else(|| all_decode_targets_active_mask(structure_ref.num_decode_targets));
+    *active_decode_targets_mask_state = Some(active_decode_targets_mask);
     if !has_any_active_decode_target(&decode_target_indications, active_decode_targets_mask) {
         return None;
     }
 
+    let has_switching_decode_target =
+        has_switching_decode_target(&decode_target_indications, active_decode_targets_mask);
+    let decode_target_indications = decode_target_indications
+        .into_iter()
+        .map(DependencyDescriptorDecodeTargetIndication::from_wire)
+        .collect::<Option<Vec<_>>>()?;
     Some(DependencyDescriptorPacketMetadata {
+        frame_number,
         layer_ids,
         first_packet_in_frame,
         last_packet_in_frame,
-        has_switching_decode_target: has_switching_decode_target(
-            &decode_target_indications,
-            active_decode_targets_mask,
-        ),
+        active_decode_targets_mask,
+        decode_target_indications,
+        has_switching_decode_target,
     })
 }
 
