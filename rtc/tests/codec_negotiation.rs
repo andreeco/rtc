@@ -118,6 +118,69 @@ fn assert_simulcast_answer(sdp: &str) {
 }
 
 #[test]
+fn default_audio_codecs_negotiate_livekit_red() {
+    let config = RTCConfigurationBuilder::new().build();
+    let mut offerer_media_engine = MediaEngine::default();
+    offerer_media_engine
+        .register_default_codecs()
+        .expect("register offerer codecs");
+    let mut offerer = RTCPeerConnectionBuilder::new()
+        .with_configuration(config.clone())
+        .with_media_engine(offerer_media_engine)
+        .build()
+        .expect("build offerer");
+
+    offerer
+        .add_transceiver_from_kind(
+            RtpCodecKind::Audio,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Recvonly,
+                streams: vec![],
+                send_encodings: vec![],
+            }),
+        )
+        .expect("add audio transceiver");
+
+    let offer = offerer.create_offer(None).expect("create offer");
+    offerer
+        .set_local_description(offer.clone())
+        .expect("set local offer");
+    assert!(
+        offer.sdp.contains("a=rtpmap:63 red/48000/2"),
+        "{}",
+        offer.sdp
+    );
+    assert!(offer.sdp.contains("a=fmtp:63 111/111"), "{}", offer.sdp);
+
+    let mut answerer_media_engine = MediaEngine::default();
+    answerer_media_engine
+        .register_default_codecs()
+        .expect("register answerer codecs");
+    let mut answerer = RTCPeerConnectionBuilder::new()
+        .with_configuration(config)
+        .with_media_engine(answerer_media_engine)
+        .build()
+        .expect("build answerer");
+    answerer
+        .set_remote_description(offer)
+        .expect("set remote offer");
+
+    let answer = answerer.create_answer(None).expect("create answer");
+    assert!(
+        answer.sdp.contains("a=rtpmap:63 red/48000/2"),
+        "{}",
+        answer.sdp
+    );
+    assert!(answer.sdp.contains("a=fmtp:63 111/111"), "{}", answer.sdp);
+    answerer
+        .set_local_description(answer.clone())
+        .expect("set local answer");
+    offerer
+        .set_remote_description(answer)
+        .expect("set remote answer");
+}
+
+#[test]
 fn test_add_transceiver_from_kind_negotiates_non_first_codec() {
     let vp8 = video_codec(MIME_TYPE_VP8, 96);
     let h264 = video_codec(MIME_TYPE_H264, 102);

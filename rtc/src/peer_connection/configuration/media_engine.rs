@@ -23,7 +23,7 @@
 //!
 //! // Register standard WebRTC codecs
 //! media_engine.register_default_codecs()?;
-//! // Now supports: Opus, G722, PCMU, PCMA, VP8, VP9, H264, AV1
+//! // Now supports: Opus, RED, G722, PCMU, PCMA, VP8, VP9, H264, AV1
 //! # Ok(())
 //! # }
 //! ```
@@ -119,6 +119,12 @@ pub const MIME_TYPE_HEVC: &str = "video/H265";
 /// Recommended for most WebRTC applications.
 /// Note: MIME type matching is case-insensitive.
 pub const MIME_TYPE_OPUS: &str = "audio/opus";
+
+/// RED redundant audio codec MIME type.
+///
+/// Carries one or more encoded audio blocks using RFC 2198 framing.
+/// Note: MIME type matching is case-insensitive.
+pub const MIME_TYPE_RED: &str = "audio/red";
 
 /// VP8 video codec MIME type.
 ///
@@ -345,6 +351,16 @@ impl MediaEngine {
                     rtcp_feedback: vec![],
                 },
                 payload_type: 111,
+            },
+            RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_RED.to_owned(),
+                    clock_rate: 48000,
+                    channels: 2,
+                    sdp_fmtp_line: "111/111".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                payload_type: 63,
             },
             RTCRtpCodecParameters {
                 rtp_codec: RTCRtpCodec {
@@ -1151,6 +1167,29 @@ impl MediaEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_audio_red_codec_matches_livekit_compatible_payload_type_and_fmtp() {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs().unwrap();
+
+        let audio_codecs = media_engine.get_registered_codecs_by_kind(RtpCodecKind::Audio);
+        let opus_index = audio_codecs
+            .iter()
+            .position(|codec| codec.rtp_codec.mime_type == MIME_TYPE_OPUS)
+            .expect("default audio codecs should include Opus");
+        let red_index = audio_codecs
+            .iter()
+            .position(|codec| codec.rtp_codec.mime_type == MIME_TYPE_RED)
+            .expect("default audio codecs should include RED");
+        let red = &audio_codecs[red_index];
+
+        assert_eq!(red_index, opus_index + 1);
+        assert_eq!(red.payload_type, 63);
+        assert_eq!(red.rtp_codec.clock_rate, 48_000);
+        assert_eq!(red.rtp_codec.channels, 2);
+        assert_eq!(red.rtp_codec.sdp_fmtp_line, "111/111");
+    }
 
     #[test]
     fn default_av1_codec_matches_livekit_compatible_payload_type_and_fmtp() {
