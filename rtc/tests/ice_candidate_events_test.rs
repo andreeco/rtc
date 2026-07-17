@@ -4,11 +4,64 @@
 //! via add_local_candidate(), the OnIceCandidateEvent is properly emitted
 //! and can be retrieved via poll_event().
 
+use rtc::ice::agent::Nat1To1IpMapping;
 use rtc::peer_connection::RTCPeerConnectionBuilder;
 use rtc::peer_connection::configuration::RTCConfigurationBuilder;
+use rtc::peer_connection::configuration::setting_engine::SettingEngine;
 use rtc::peer_connection::event::RTCPeerConnectionEvent;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use rtc::sansio::Protocol;
+
+#[test]
+fn mapped_host_candidate_event_hides_private_address() {
+    let config = RTCConfigurationBuilder::new().build();
+    let mut setting_engine = SettingEngine::default();
+    setting_engine.set_nat_1to1_ip_mappings(vec![Nat1To1IpMapping {
+        local_ip: "10.0.0.10".parse().expect("local test IP should parse"),
+        external_ip: "203.0.113.10"
+            .parse()
+            .expect("external test IP should parse"),
+    }]);
+    let mut pc = RTCPeerConnectionBuilder::new()
+        .with_configuration(config)
+        .with_setting_engine(setting_engine)
+        .build()
+        .expect("peer connection should build");
+
+    pc.add_local_candidate(RTCIceCandidateInit {
+        candidate: "candidate:1 1 udp 2130706431 10.0.0.10 54321 typ host".to_string(),
+        sdp_mid: Some("0".to_string()),
+        sdp_mline_index: Some(0),
+        username_fragment: Some("test".to_string()),
+        url: None,
+    })
+    .expect("mapped local candidate should add");
+
+    let event = pc
+        .poll_event()
+        .expect("mapped local candidate should emit an event");
+    let RTCPeerConnectionEvent::OnIceCandidateEvent(event) = event else {
+        panic!("expected an ICE candidate event");
+    };
+    assert_eq!(event.candidate.address, "203.0.113.10");
+    assert!(
+        event
+            .candidate
+            .to_json()
+            .expect("candidate should serialize")
+            .candidate
+            .contains("203.0.113.10")
+    );
+
+    assert!(
+        !event
+            .candidate
+            .to_json()
+            .expect("candidate should serialize")
+            .candidate
+            .contains("10.0.0.10")
+    );
+}
 
 #[test]
 fn test_host_candidate_event_emission() {

@@ -13,6 +13,76 @@ use crate::candidate::candidate_server_reflexive::*;
 use crate::candidate::*;
 
 #[test]
+fn host_candidate_mapping_advertises_external_address_and_retains_local_socket() -> Result<()> {
+    let mut agent = Agent::new(Arc::new(AgentConfig {
+        nat_1to1_ip_mappings: vec![Nat1To1IpMapping {
+            local_ip: "10.0.0.10".parse().expect("local test IP should parse"),
+            external_ip: "203.0.113.10"
+                .parse()
+                .expect("external test IP should parse"),
+        }],
+        ..Default::default()
+    }))?;
+    let candidate = CandidateHostConfig {
+        base_config: CandidateConfig {
+            network: "udp".to_owned(),
+            address: "10.0.0.10".to_owned(),
+            port: 5000,
+            component: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+    .new_candidate_host()?;
+
+    assert!(agent.add_local_candidate(candidate)?);
+    let candidate = agent
+        .get_local_candidates()
+        .first()
+        .expect("mapped candidate should be retained");
+
+    assert_eq!(candidate.address(), "203.0.113.10");
+    assert_eq!(candidate.addr().to_string(), "10.0.0.10:5000");
+    assert!(candidate.marshal().contains("203.0.113.10"));
+    assert!(!candidate.marshal().contains("10.0.0.10"));
+    Ok(())
+}
+
+#[test]
+fn host_candidate_mapping_leaves_unmapped_interfaces_unchanged() -> Result<()> {
+    let mut agent = Agent::new(Arc::new(AgentConfig {
+        nat_1to1_ip_mappings: vec![Nat1To1IpMapping {
+            local_ip: "10.0.0.10".parse().expect("local test IP should parse"),
+            external_ip: "203.0.113.10"
+                .parse()
+                .expect("external test IP should parse"),
+        }],
+        ..Default::default()
+    }))?;
+    let candidate = CandidateHostConfig {
+        base_config: CandidateConfig {
+            network: "udp".to_owned(),
+            address: "10.0.0.11".to_owned(),
+            port: 5001,
+            component: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+    .new_candidate_host()?;
+
+    assert!(agent.add_local_candidate(candidate)?);
+    let candidate = agent
+        .get_local_candidates()
+        .first()
+        .expect("unmapped candidate should be retained");
+
+    assert_eq!(candidate.address(), "10.0.0.11");
+    assert_eq!(candidate.addr().to_string(), "10.0.0.11:5001");
+    Ok(())
+}
+
+#[test]
 fn test_pair_search() -> Result<()> {
     let config = Arc::new(AgentConfig::default());
     let mut a = Agent::new(config)?;

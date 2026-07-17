@@ -6,6 +6,7 @@ mod agent_proto;
 pub mod agent_selector;
 pub mod agent_stats;
 
+pub use agent_config::Nat1To1IpMapping;
 use agent_config::*;
 use bytes::BytesMut;
 use log::{debug, error, info, trace, warn};
@@ -156,6 +157,7 @@ pub struct Agent {
 
     pub(crate) candidate_types: Vec<CandidateType>,
     pub(crate) network_types: Vec<NetworkType>,
+    pub(crate) nat_1to1_ip_mappings: Vec<Nat1To1IpMapping>,
     pub(crate) urls: Vec<Url>,
 
     pub(crate) write_outs: VecDeque<TaggedBytesMut>,
@@ -199,6 +201,7 @@ impl Default for Agent {
             mdns: None,
             candidate_types: vec![],
             network_types: vec![],
+            nat_1to1_ip_mappings: vec![],
             urls: vec![],
             write_outs: Default::default(),
             event_outs: Default::default(),
@@ -248,6 +251,14 @@ impl Agent {
             && !contains_candidate_type(CandidateType::Relay, &candidate_types)
         {
             return Err(Error::ErrUselessUrlsProvided);
+        }
+
+        if config
+            .nat_1to1_ip_mappings
+            .iter()
+            .any(|mapping| mapping.local_ip.is_ipv4() != mapping.external_ip.is_ipv4())
+        {
+            return Err(Error::ErrInvalidNat1to1IpMapping);
         }
 
         let mut agent = Self {
@@ -355,6 +366,7 @@ impl Agent {
 
             candidate_types,
             network_types: config.network_types.clone(),
+            nat_1to1_ip_mappings: config.nat_1to1_ip_mappings.clone(),
             urls: config.urls.clone(),
 
             write_outs: VecDeque::new(),
@@ -373,6 +385,16 @@ impl Agent {
 
     /// Adds a new local candidate.
     pub fn add_local_candidate(&mut self, mut c: Candidate) -> Result<bool> {
+        if c.candidate_type() == CandidateType::Host {
+            if let Some(mapping) = self
+                .nat_1to1_ip_mappings
+                .iter()
+                .find(|mapping| mapping.local_ip == c.addr().ip())
+            {
+                c.address = mapping.external_ip.to_string();
+            }
+        }
+
         // Filter by network type if network_types is configured
         if !self.network_types.is_empty() {
             let candidate_network_type = c.network_type();

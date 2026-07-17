@@ -1,4 +1,14 @@
 use std::net::IpAddr;
+
+/// Maps a local host interface address to the public address advertised for it.
+///
+/// The ICE candidate retains its local socket address for packet I/O while
+/// signalling exposes `external_ip`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Nat1To1IpMapping {
+    pub local_ip: IpAddr,
+    pub external_ip: IpAddr,
+}
 use std::time::Duration;
 
 use super::*;
@@ -94,6 +104,9 @@ pub struct AgentConfig {
     /// An optional configuration for disabling or enabling support for specific network types.
     /// If empty, all network types are supported.
     pub network_types: Vec<NetworkType>,
+
+    /// Public address mappings applied to matching local host candidates.
+    pub nat_1to1_ip_mappings: Vec<Nat1To1IpMapping>,
 
     /// Controls how often our internal task loop runs when in the connecting state.
     /// Only useful for testing.

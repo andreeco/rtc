@@ -63,6 +63,7 @@ where
             keepalive_interval: setting_engine.timeout.ice_keepalive_interval,
             candidate_types,
             network_types,
+            nat_1to1_ip_mappings: setting_engine.candidates.nat_1to1_ip_mappings.clone(),
             check_interval: setting_engine
                 .timeout
                 .ice_check_interval

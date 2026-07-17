@@ -111,6 +111,7 @@ use std::sync::Arc;
 use dtls::extension::extension_use_srtp::SrtpProtectionProfile;
 //TODO: use ice::agent::agent_config::{InterfaceFilterFn, IpFilterFn};
 //TODO: use ice::mdns::MulticastDnsMode;
+use ice::agent::agent_config::Nat1To1IpMapping;
 use ice::network_type::NetworkType;
 //TODO: use ice::udp_network::UDPNetwork;
 use crate::peer_connection::transport::dtls::role::RTCDtlsRole;
@@ -204,11 +205,14 @@ pub struct Candidates {
     pub ice_network_types: Vec<NetworkType>,
     //TODO: pub interface_filter: Arc<Option<InterfaceFilterFn>>,
     //TODO: pub ip_filter: Arc<Option<IpFilterFn>>,
-    /// External IP addresses for 1:1 NAT mappings (e.g., AWS Elastic IP).
+    /// External IP addresses for the legacy 1:1 NAT API.
     pub nat_1to1_ips: Vec<String>,
 
-    /// Candidate type to use for NAT 1:1 IPs (Host or Srflx).
+    /// Candidate type to use for legacy 1:1 NAT IPs (Host or Srflx).
     pub nat_1to1_ip_candidate_type: RTCIceCandidateType,
+
+    /// Per-interface local-to-external host candidate mappings.
+    pub nat_1to1_ip_mappings: Vec<Nat1To1IpMapping>,
     /// Static ICE username fragment (ufrag) for reproducible sessions.
     pub username_fragment: String,
 
@@ -636,6 +640,14 @@ impl SettingEngine {
     pub fn set_nat_1to1_ips(&mut self, ips: Vec<String>, candidate_type: RTCIceCandidateType) {
         self.candidates.nat_1to1_ips = ips;
         self.candidates.nat_1to1_ip_candidate_type = candidate_type;
+    }
+
+    /// Configures explicit local-interface to public-IP host candidate mappings.
+    ///
+    /// Matching host candidates signal their public address while retaining their
+    /// local socket address for ICE packet routing.
+    pub fn set_nat_1to1_ip_mappings(&mut self, mappings: Vec<Nat1To1IpMapping>) {
+        self.candidates.nat_1to1_ip_mappings = mappings;
     }
 
     /// Sets the DTLS role to use when answering an offer.
