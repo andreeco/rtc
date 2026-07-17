@@ -2,7 +2,7 @@ use rtc::media_stream::MediaStreamTrack;
 use rtc::peer_connection::RTCPeerConnectionBuilder;
 use rtc::peer_connection::configuration::RTCConfigurationBuilder;
 use rtc::peer_connection::configuration::media_engine::{
-    MIME_TYPE_H264, MIME_TYPE_VP8, MediaEngine,
+    MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_RED, MIME_TYPE_VP8, MediaEngine,
 };
 use rtc::rtp_transceiver::rtp_sender::{
     RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters,
@@ -27,6 +27,19 @@ fn video_codec(mime_type: &str, payload_type: u8) -> RTCRtpCodecParameters {
         },
         payload_type,
         ..Default::default()
+    }
+}
+
+fn audio_codec(mime_type: &str, payload_type: u8, sdp_fmtp_line: &str) -> RTCRtpCodecParameters {
+    RTCRtpCodecParameters {
+        rtp_codec: RTCRtpCodec {
+            mime_type: mime_type.to_owned(),
+            clock_rate: 48_000,
+            channels: 2,
+            sdp_fmtp_line: sdp_fmtp_line.to_owned(),
+            rtcp_feedback: vec![],
+        },
+        payload_type,
     }
 }
 
@@ -178,6 +191,82 @@ fn default_audio_codecs_negotiate_livekit_red() {
     offerer
         .set_remote_description(answer)
         .expect("set remote answer");
+}
+
+#[test]
+fn receiver_codec_preferences_order_answer_codecs() {
+    let config = RTCConfigurationBuilder::new().build();
+    let opus = audio_codec(MIME_TYPE_OPUS, 111, "minptime=10;useinbandfec=1");
+    let red = audio_codec(MIME_TYPE_RED, 63, "111/111");
+
+    let mut offerer_media_engine = MediaEngine::default();
+    offerer_media_engine
+        .register_default_codecs()
+        .expect("register offerer codecs");
+    let mut offerer = RTCPeerConnectionBuilder::new()
+        .with_configuration(config.clone())
+        .with_media_engine(offerer_media_engine)
+        .build()
+        .expect("build offerer");
+    offerer
+        .add_transceiver_from_kind(
+            RtpCodecKind::Audio,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Sendonly,
+                streams: vec![],
+                send_encodings: vec![encoding(&opus, BASE_SSRC, None)],
+            }),
+        )
+        .expect("add audio sender");
+
+    let offer = offerer.create_offer(None).expect("create offer");
+    offerer
+        .set_local_description(offer.clone())
+        .expect("set local offer");
+
+    let mut answerer_media_engine = MediaEngine::default();
+    answerer_media_engine
+        .register_default_codecs()
+        .expect("register answerer codecs");
+    let mut answerer = RTCPeerConnectionBuilder::new()
+        .with_configuration(config)
+        .with_media_engine(answerer_media_engine)
+        .build()
+        .expect("build answerer");
+    answerer
+        .set_remote_description(offer)
+        .expect("set remote offer");
+
+    let receiver_id = answerer
+        .get_receivers()
+        .next()
+        .expect("remote audio offer creates receiver");
+    answerer
+        .rtp_receiver(receiver_id)
+        .expect("answerer receiver")
+        .set_codec_preferences(vec![red.clone(), opus.clone()])
+        .expect("set receiver codec preferences");
+
+    let receiver_codecs = answerer
+        .rtp_receiver(receiver_id)
+        .expect("answerer receiver")
+        .get_parameters()
+        .rtp_parameters
+        .codecs
+        .clone();
+    assert_eq!(receiver_codecs, vec![red.clone(), opus.clone()]);
+
+    let answer = answerer.create_answer(None).expect("create answer");
+    let red_position = answer
+        .sdp
+        .find("a=rtpmap:63 red/48000/2")
+        .expect("answer should include RED");
+    let opus_position = answer
+        .sdp
+        .find("a=rtpmap:111 opus/48000/2")
+        .expect("answer should include Opus");
+    assert!(red_position < opus_position, "{}", answer.sdp);
+    assert!(answer.sdp.contains("a=fmtp:63 111/111"), "{}", answer.sdp);
 }
 
 #[test]

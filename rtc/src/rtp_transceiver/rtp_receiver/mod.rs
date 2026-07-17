@@ -47,7 +47,7 @@
 //! if let Some(mut receiver) = peer_connection.rtp_receiver(receiver_id) {
 //!     // Get current receive parameters
 //!     let params = receiver.get_parameters();
-//!     
+//!
 //!     println!("Codecs: {:?}", params.rtp_parameters.codecs);
 //!     println!("Header extensions: {:?}", params.rtp_parameters.header_extensions);
 //!     println!("RTCP CNAME: {}", params.rtp_parameters.rtcp.cname);
@@ -72,7 +72,7 @@
 //!         for codec in capabilities.codecs {
 //!             println!("  - {} @ {} Hz", codec.mime_type, codec.clock_rate);
 //!         }
-//!     
+//!
 //!         println!("Supported header extensions:");
 //!         for ext in capabilities.header_extensions {
 //!             println!("  - {}", ext.uri);
@@ -160,6 +160,7 @@ use crate::peer_connection::message::RTCMessage;
 use crate::rtp_transceiver::RTCRtpReceiverId;
 use crate::rtp_transceiver::rtp_sender::rtp_capabilities::RTCRtpCapabilities;
 use crate::rtp_transceiver::rtp_sender::rtp_codec::RtpCodecKind;
+use crate::rtp_transceiver::rtp_sender::rtp_codec_parameters::RTCRtpCodecParameters;
 use crate::rtp_transceiver::rtp_sender::rtp_receiver_parameters::RTCRtpReceiveParameters;
 use interceptor::{Interceptor, NoopInterceptor};
 use sansio::Protocol;
@@ -246,6 +247,19 @@ where
             .as_mut()
             .unwrap()
             .get_parameters(&self.peer_connection.media_engine)
+    }
+
+    /// Sets the ordered codec preferences for this receiver's transceiver.
+    ///
+    /// The order determines codec order in a subsequent offer or answer. Passing an empty list
+    /// restores the media engine's default codec order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any codec is not supported by the media engine.
+    pub fn set_codec_preferences(&mut self, codecs: Vec<RTCRtpCodecParameters>) -> Result<()> {
+        self.peer_connection.rtp_transceivers[self.id.0]
+            .set_codec_preferences(codecs, &self.peer_connection.media_engine)
     }
 
     /// Returns an iterator over the contributing sources for this receiver.
